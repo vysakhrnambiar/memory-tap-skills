@@ -130,6 +130,20 @@
         /* Loading */
         .loading { text-align: center; padding: 40px; color: #666; }
 
+        /* Alerts */
+        .alerts-container { margin-bottom: 16px; }
+        .alert-card {
+            padding: 12px 16px; border-radius: 8px; margin-bottom: 8px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .alert-card.error { background: #ef444422; border: 1px solid #ef444444; }
+        .alert-card.warning { background: #eab30822; border: 1px solid #eab30844; }
+        .alert-card.info { background: #3b82f622; border: 1px solid #3b82f644; }
+        .alert-card .alert-text h4 { font-size: 14px; margin-bottom: 2px; }
+        .alert-card .alert-text p { font-size: 12px; color: #999; }
+        .alert-card .alert-dismiss { cursor: pointer; color: #666; font-size: 18px; padding: 4px 8px; }
+        .alert-card .alert-dismiss:hover { color: #fff; }
+
         /* Sign-in banner */
         .signin-banner {
             background: linear-gradient(135deg, #7c3aed22, #4f46e522);
@@ -139,9 +153,114 @@
         .signin-banner h2 { font-size: 20px; margin-bottom: 8px; color: #e0e0e0; }
         .signin-banner p { color: #999; font-size: 14px; margin-bottom: 16px; }
         .signin-banner .btn { font-size: 15px; padding: 10px 24px; }
+
+        /* Sign-in wizard */
+        .wizard { margin-bottom: 24px; }
+        .wizard-step {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px;
+            padding: 20px 24px; margin-bottom: 12px;
+            display: flex; align-items: center; gap: 16px;
+        }
+        .wizard-step.completed { border-color: #22c55e44; }
+        .wizard-step.active { border-color: #7c3aed; }
+        .wizard-step.pending { opacity: 0.5; }
+        .wizard-step-num {
+            width: 36px; height: 36px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 16px; flex-shrink: 0;
+        }
+        .wizard-step.completed .wizard-step-num { background: #22c55e33; color: #22c55e; }
+        .wizard-step.active .wizard-step-num { background: #7c3aed33; color: #7c3aed; }
+        .wizard-step.pending .wizard-step-num { background: #33333366; color: #666; }
+        .wizard-step-content { flex: 1; }
+        .wizard-step-content h3 { font-size: 15px; margin-bottom: 4px; }
+        .wizard-step-content p { font-size: 13px; color: #888; }
+        .wizard-step-content .skills-covered { font-size: 12px; color: #666; margin-top: 4px; }
+
+        /* Indemnity overlay */
+        .indemnity-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.95); z-index: 1000;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .indemnity-box {
+            background: #1a1a1a; border: 1px solid #333; border-radius: 12px;
+            max-width: 640px; width: 90%; max-height: 90vh; overflow-y: auto;
+            padding: 32px;
+        }
+        .indemnity-box h2 { font-size: 22px; margin-bottom: 16px; color: #7c3aed; }
+        .indemnity-box h3 { font-size: 16px; margin: 16px 0 8px; color: #ccc; }
+        .indemnity-box p, .indemnity-box li { font-size: 14px; color: #999; line-height: 1.7; }
+        .indemnity-box ul { padding-left: 20px; margin-bottom: 12px; }
+        .indemnity-box .highlight { color: #e0e0e0; font-weight: 500; }
+        .indemnity-box .accept-section {
+            margin-top: 24px; padding-top: 20px; border-top: 1px solid #333;
+            text-align: center;
+        }
+        .indemnity-box .checkbox-row {
+            display: flex; align-items: flex-start; gap: 10px;
+            margin-bottom: 16px; text-align: left;
+        }
+        .indemnity-box .checkbox-row input { margin-top: 4px; }
+        .indemnity-box .checkbox-row label { font-size: 13px; color: #ccc; }
     </style>
 </head>
 <body>
+    <!-- Indemnity / Risk Acknowledgment (blocks everything until accepted) -->
+    <div id="indemnity-overlay" class="indemnity-overlay" style="display:none">
+        <div class="indemnity-box">
+            <h2>Welcome to Memory Tap</h2>
+            <p>Before you begin, please read and understand what this application does.</p>
+
+            <h3>What Memory Tap Does</h3>
+            <p>Memory Tap is a personal knowledge collector that runs on your computer. It connects to a
+            <span class="highlight">separate, isolated Chrome browser</span> (not your main browser) and
+            navigates websites you use — such as YouTube, ChatGPT, and Google Gemini — to collect your
+            conversation history, watch history, and related data into a
+            <span class="highlight">local database on your machine</span>.</p>
+
+            <h3>How It Works</h3>
+            <ul>
+                <li>Memory Tap launches its own Chrome instance with a <span class="highlight">separate profile</span> — it never touches your main browser, bookmarks, or other data.</li>
+                <li>You will be asked to <span class="highlight">sign into your accounts</span> (Google, ChatGPT, etc.) inside this isolated Chrome. This gives Memory Tap access to your session cookies and browsing data within that profile.</li>
+                <li>A Python program controls this Chrome browser using the <span class="highlight">Chrome DevTools Protocol (CDP)</span> — the same technology used by browser developer tools. It navigates pages, scrolls, and reads page content, mimicking human browsing behavior.</li>
+                <li>Collection runs periodically in the background (every few hours by default). The program opens pages, reads your history, and saves it locally.</li>
+            </ul>
+
+            <h3>Your Data</h3>
+            <ul>
+                <li><span class="highlight">All collected data stays on your machine</span> — in a SQLite database stored in your local AppData folder. Nothing is uploaded to any server.</li>
+                <li>No analytics, telemetry, or tracking of any kind is performed.</li>
+                <li>The only network requests Memory Tap makes are: (1) to the websites you authorize it to collect from, and (2) to check for skill updates from our GitHub repository.</li>
+                <li>If you configure the optional RAG chat feature, your search queries are sent to OpenRouter (a third-party LLM API) to generate answers. Your collected data is included as context in those requests. This feature is entirely optional and requires you to provide your own API key.</li>
+            </ul>
+
+            <h3>Risks You Should Understand</h3>
+            <ul>
+                <li><span class="highlight">Session access:</span> By signing into websites inside Memory Tap's Chrome, you are granting a Python program access to your authenticated sessions. This program can read anything you can see when logged into those websites.</li>
+                <li><span class="highlight">Account security:</span> While Memory Tap only reads data (it does not post, delete, or modify anything), any program with session access theoretically could. You are trusting this software to behave as described.</li>
+                <li><span class="highlight">Third-party websites:</span> Automated browsing may violate the terms of service of some websites. Use at your own discretion.</li>
+                <li><span class="highlight">Local security:</span> Your collected data is stored unencrypted on your local filesystem. Anyone with access to your computer can access this data.</li>
+                <li><span class="highlight">Open source:</span> This software is open source. You can inspect the code at <a href="https://github.com/vysakhrnambiar/memory-tap-skills" style="color:#7c3aed" target="_blank">github.com/vysakhrnambiar/memory-tap-skills</a> to verify its behavior.</li>
+            </ul>
+
+            <div class="accept-section">
+                <div class="checkbox-row">
+                    <input type="checkbox" id="accept-checkbox" />
+                    <label for="accept-checkbox">
+                        I have read and understand the above. I acknowledge that Memory Tap will access my
+                        authenticated browser sessions to read my conversation and browsing history. I understand
+                        that all data is stored locally and that I am using this software at my own risk.
+                        I accept full responsibility for my use of this application.
+                    </label>
+                </div>
+                <button class="btn primary" id="accept-btn" disabled onclick="acceptIndemnity()" style="font-size:15px;padding:12px 32px">
+                    I Understand &amp; Accept
+                </button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <h1><span>Memory</span> Tap</h1>
@@ -155,12 +274,17 @@
             <button class="tab" data-tab="settings">Settings</button>
         </div>
 
-        <!-- Sign-in banner (shown when no sources are logged in) -->
-        <div id="signin-banner" class="signin-banner" style="display:none">
-            <h2>Welcome to Memory Tap</h2>
-            <p>Sign into your Google account in the Memory Tap browser window to get started.<br>
-            This is a separate Chrome instance — it won't affect your main browser.</p>
-            <button class="btn primary" onclick="openGoogleSignIn()">Open Sign-In Page</button>
+        <!-- Alerts -->
+        <div id="alerts-container" class="alerts-container"></div>
+
+        <!-- Sign-in wizard (shown when setup not complete) -->
+        <div id="signin-wizard" class="wizard" style="display:none">
+            <div class="signin-banner" style="margin-bottom:16px">
+                <h2>Set Up Your Sources</h2>
+                <p>Sign into the services you want Memory Tap to collect from.<br>
+                Each sign-in happens in the isolated Memory Tap Chrome — not your main browser.</p>
+            </div>
+            <div id="wizard-steps"></div>
         </div>
 
         <!-- Timeline Panel -->
@@ -213,33 +337,145 @@
             });
         });
 
-        // Load data on start
-        loadStats();
-        loadTimeline();
-        loadSources();
-        loadSettings();
-        checkSignInStatus();
+        // Indemnity checkbox enables button
+        document.getElementById('accept-checkbox').addEventListener('change', function() {
+            document.getElementById('accept-btn').disabled = !this.checked;
+        });
 
-        async function checkSignInStatus() {
+        // Check consent before showing anything
+        checkConsent();
+
+        async function checkConsent() {
             try {
-                const resp = await fetch('/api/sources');
-                const sources = await resp.json();
-                const anyLoggedIn = sources.some(s => s.login_status === 'logged_in');
-                document.getElementById('signin-banner').style.display = anyLoggedIn ? 'none' : 'block';
+                const resp = await fetch('/api/settings');
+                const data = await resp.json();
+                if (data.consent_accepted === 'yes') {
+                    document.getElementById('indemnity-overlay').style.display = 'none';
+                    loadAll();
+                } else {
+                    document.getElementById('indemnity-overlay').style.display = 'flex';
+                }
+            } catch(e) {
+                document.getElementById('indemnity-overlay').style.display = 'flex';
+            }
+        }
+
+        async function acceptIndemnity() {
+            await fetch('/api/settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({consent_accepted: 'yes', consent_date: new Date().toISOString()})
+            });
+            document.getElementById('indemnity-overlay').style.display = 'none';
+            loadAll();
+        }
+
+        function loadAll() {
+            loadStats();
+            loadTimeline();
+            loadSources();
+            loadSettings();
+            checkSignInStatus();
+            loadAlerts();
+        }
+
+        // Poll alerts every 15 seconds
+        setInterval(loadAlerts, 15000);
+
+        async function loadAlerts() {
+            try {
+                const resp = await fetch('/api/alerts');
+                const alerts = await resp.json();
+                const container = document.getElementById('alerts-container');
+                if (alerts.length === 0) {
+                    container.innerHTML = '';
+                    return;
+                }
+                let html = '';
+                for (const a of alerts) {
+                    html += `<div class="alert-card ${a.level}">
+                        <div class="alert-text">
+                            <h4>${esc(a.title)}</h4>
+                            <p>${esc(a.message)} &middot; ${timeAgo(a.created_at)}</p>
+                        </div>
+                        <span class="alert-dismiss" onclick="dismissAlert(${a.id})">&times;</span>
+                    </div>`;
+                }
+                container.innerHTML = html;
             } catch(e) {}
         }
 
-        async function openGoogleSignIn() {
-            // Try to open sign-in via any source that has a login URL
+        async function dismissAlert(id) {
+            await fetch(`/api/alerts/${id}/dismiss`, { method: 'POST' });
+            loadAlerts();
+        }
+
+        async function checkSignInStatus() {
             try {
-                const resp = await fetch('/api/sources');
-                const sources = await resp.json();
-                if (sources.length > 0) {
-                    await fetch(`/api/sources/${sources[0].name}/login`, { method: 'POST' });
-                    alert('A Chrome window has opened. Please sign into your Google account there.\n\nOnce signed in, come back here and click "Run Now" on any source to start collecting.');
-                    // Refresh after a delay
-                    setTimeout(() => { checkSignInStatus(); loadSources(); }, 5000);
+                const resp = await fetch('/api/auth_providers');
+                const providers = await resp.json();
+                const allDone = providers.every(p => p.all_logged_in);
+                const wizard = document.getElementById('signin-wizard');
+
+                if (allDone) {
+                    wizard.style.display = 'none';
+                    return;
                 }
+
+                // Build wizard steps
+                let html = '';
+                let stepNum = 1;
+                for (const p of providers) {
+                    const state = p.all_logged_in ? 'completed' : 'active';
+                    const icon = p.all_logged_in ? '&#10003;' : stepNum;
+                    const skillNames = p.skills.map(s => s.name.replace('_', ' ')).join(', ');
+                    const btnHtml = p.all_logged_in
+                        ? '<span style="color:#22c55e;font-size:13px">Signed in</span>'
+                        : `<button class="btn primary" onclick="wizardSignIn('${p.skills[0].name}', '${p.provider}')">Sign In</button>`;
+
+                    html += `<div class="wizard-step ${state}">
+                        <div class="wizard-step-num">${icon}</div>
+                        <div class="wizard-step-content">
+                            <h3>Sign into ${esc(p.provider.charAt(0).toUpperCase() + p.provider.slice(1))}</h3>
+                            <p>${p.all_logged_in ? 'All set!' : 'Opens in the Memory Tap Chrome window'}</p>
+                            <div class="skills-covered">Covers: ${esc(skillNames)}</div>
+                        </div>
+                        <div>${btnHtml}</div>
+                    </div>`;
+                    stepNum++;
+                }
+
+                // Final step: all done
+                if (!allDone) {
+                    html += `<div class="wizard-step pending">
+                        <div class="wizard-step-num">${stepNum}</div>
+                        <div class="wizard-step-content">
+                            <h3>Start collecting</h3>
+                            <p>Once signed in, Memory Tap will begin collecting your data automatically</p>
+                        </div>
+                    </div>`;
+                }
+
+                document.getElementById('wizard-steps').innerHTML = html;
+                wizard.style.display = 'block';
+            } catch(e) {}
+        }
+
+        async function wizardSignIn(skillName, providerName) {
+            try {
+                const resp = await fetch(`/api/sources/${skillName}/login`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.url) {
+                    alert(`A Chrome window has opened to sign into ${providerName}.\n\nPlease complete the sign-in, then come back here.\nThe wizard will update automatically.`);
+                }
+                // Poll for sign-in completion
+                let checks = 0;
+                const poll = setInterval(async () => {
+                    checks++;
+                    if (checks > 60) { clearInterval(poll); return; } // stop after 5 min
+                    checkSignInStatus();
+                    loadSources();
+                }, 5000);
             } catch(e) { alert('Failed to open sign-in: ' + e); }
         }
 
@@ -309,14 +545,45 @@
 
         async function loadSources() {
             try {
-                const resp = await fetch('/api/sources');
-                const sources = await resp.json();
+                const [sourcesResp, providersResp] = await Promise.all([
+                    fetch('/api/sources'),
+                    fetch('/api/auth_providers'),
+                ]);
+                const sources = await sourcesResp.json();
+                const providers = await providersResp.json();
+
                 if (sources.length === 0) {
                     document.getElementById('sources-list').innerHTML =
                         '<div class="loading">No skills installed yet. Skills will auto-download from GitHub.</div>';
                     return;
                 }
+
                 let html = '';
+
+                // Auth provider groups
+                if (providers.length > 0) {
+                    html += '<h3 style="margin-bottom:12px;font-size:15px;color:#888">Sign-In Status</h3>';
+                    for (const p of providers) {
+                        const color = p.all_logged_in ? 'green' : 'red';
+                        const skillNames = p.skills.map(s => s.name).join(', ');
+                        html += `<div class="source-card" style="margin-bottom:8px">
+                            <div class="source-info">
+                                <h3 style="text-transform:capitalize">${esc(p.provider)}</h3>
+                                <div class="status">
+                                    <span class="status-dot ${color}"></span>
+                                    ${p.all_logged_in ? 'Signed in' : 'Not signed in'}
+                                    &middot; Covers: ${esc(skillNames)}
+                                </div>
+                            </div>
+                            <div class="source-actions">
+                                ${p.all_logged_in ? '' : `<button class="btn primary" onclick="loginProvider('${p.skills[0].name}')">Sign In</button>`}
+                            </div>
+                        </div>`;
+                    }
+                    html += '<h3 style="margin:20px 0 12px;font-size:15px;color:#888">Individual Skills</h3>';
+                }
+
+                // Individual skills
                 for (const s of sources) {
                     const statusColor = s.login_status === 'logged_in' ? 'green' :
                                        s.login_status === 'not_logged_in' ? 'red' : 'yellow';
@@ -332,7 +599,6 @@
                         </div>
                         <div class="source-actions">
                             <button class="btn" onclick="toggleSource('${s.name}')">${s.enabled ? 'Disable' : 'Enable'}</button>
-                            <button class="btn" onclick="loginSource('${s.name}')">Login</button>
                             <button class="btn primary" onclick="runSource('${s.name}')">Run Now</button>
                         </div>
                     </div>`;
@@ -342,6 +608,15 @@
                 document.getElementById('sources-list').innerHTML =
                     '<div class="loading">Failed to load sources</div>';
             }
+        }
+
+        async function loginProvider(skillName) {
+            try {
+                const resp = await fetch(`/api/sources/${skillName}/login`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.url) alert('A Chrome window has opened. Please sign in there.\\nOnce done, come back and click "Run Now" to verify.');
+                setTimeout(() => { loadSources(); checkSignInStatus(); }, 5000);
+            } catch(e) { alert('Failed to open sign-in: ' + e); }
         }
 
         async function loadSettings() {
@@ -381,14 +656,25 @@
             try {
                 const resp = await fetch(`/api/sources/${name}/run`, { method: 'POST' });
                 const data = await resp.json();
-                if (data.error) alert('Error: ' + data.error);
-                else alert(`Done! Found ${data.items_found} items (${data.items_new} new)`);
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else if (data.details && data.details.zero_items_warning) {
+                    const msg = `Warning: Found 0 items (previously had ${data.details.previous_count}).\n` +
+                        `The website may have changed.\n\n` +
+                        `Click OK to report this issue on GitHub.`;
+                    if (confirm(msg)) {
+                        window.open(data.details.github_issue_url, '_blank');
+                    }
+                } else {
+                    alert(`Done! Found ${data.items_found} items (${data.items_new} new)`);
+                }
             } finally {
                 btn.textContent = 'Run Now';
                 btn.disabled = false;
                 loadSources();
                 loadTimeline();
                 loadStats();
+                loadAlerts();
             }
         }
 

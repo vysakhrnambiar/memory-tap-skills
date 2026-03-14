@@ -14,10 +14,10 @@ import os
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..db.models import get_connection, get_setting, set_setting
+from ..db.models import get_connection, get_setting, set_setting, get_alerts, dismiss_alert
 
 logger = logging.getLogger("memory_tap.dashboard")
 
@@ -81,7 +81,49 @@ async def get_sources():
         "SELECT * FROM sources ORDER BY name"
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    sources = [dict(r) for r in rows]
+
+    # Enrich with auth_provider from loaded skills
+    if _scheduler:
+        for s in sources:
+            skill = _scheduler._skills.get(s["name"])
+            if skill:
+                s["auth_provider"] = skill.manifest.auth_provider
+                s["login_url"] = skill.get_login_url()
+            else:
+                s["auth_provider"] = ""
+                s["login_url"] = ""
+
+    return sources
+
+
+@app.get("/api/auth_providers")
+async def get_auth_providers():
+    """Get sign-in status grouped by auth provider."""
+    if not _scheduler:
+        return []
+
+    providers: dict[str, dict] = {}
+    conn = get_connection(_db_path)
+    rows = conn.execute("SELECT name, login_status FROM sources").fetchall()
+    conn.close()
+    db_status = {r["name"]: r["login_status"] for r in rows}
+
+    for name, skill in _scheduler._skills.items():
+        provider = skill.manifest.auth_provider or name
+        if provider not in providers:
+            providers[provider] = {
+                "provider": provider,
+                "login_url": skill.get_login_url(),
+                "skills": [],
+                "all_logged_in": True,
+            }
+        status = db_status.get(name, "unknown")
+        providers[provider]["skills"].append({"name": name, "login_status": status})
+        if status != "logged_in":
+            providers[provider]["all_logged_in"] = False
+
+    return list(providers.values())
 
 
 @app.post("/api/sources/{name}/toggle")
@@ -196,6 +238,52 @@ async def get_timeline(days: int = 7):
     # Sort by date descending
     result = sorted(timeline.values(), key=lambda x: x["date"], reverse=True)
     return result
+
+
+# --- API: Alerts ---
+
+@app.get("/api/alerts")
+async def api_get_alerts():
+    """Get active (undismissed) alerts."""
+    return get_alerts(db_path=_db_path)
+
+
+@app.post("/api/alerts/{alert_id}/dismiss")
+async def api_dismiss_alert(alert_id: int):
+    """Dismiss an alert."""
+    dismiss_alert(alert_id, db_path=_db_path)
+    return {"status": "ok"}
+
+
+# --- API: Screenshots ---
+
+@app.get("/api/screenshots/{filename}")
+async def get_screenshot(filename: str):
+    """Serve a screenshot file."""
+    # Sanitize filename to prevent path traversal
+    safe_name = os.path.basename(filename)
+    screenshots_dir = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""), "MemoryTap", "logs", "screenshots"
+    )
+    path = os.path.join(screenshots_dir, safe_name)
+    if os.path.isfile(path):
+        return FileResponse(path, media_type="image/png")
+    return JSONResponse({"error": "Screenshot not found"}, status_code=404)
+
+
+@app.get("/api/screenshots")
+async def list_screenshots():
+    """List available screenshots."""
+    screenshots_dir = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""), "MemoryTap", "logs", "screenshots"
+    )
+    if not os.path.isdir(screenshots_dir):
+        return []
+    files = sorted(
+        [f for f in os.listdir(screenshots_dir) if f.endswith(".png")],
+        reverse=True,
+    )
+    return [{"filename": f, "url": f"/api/screenshots/{f}"} for f in files[:20]]
 
 
 # --- API: Stats ---

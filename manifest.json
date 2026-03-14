@@ -8,6 +8,7 @@
       "version": "0.1.0",
       "file": "youtube_history.py",
       "target_site": "youtube.com",
+      "auth_provider": "google",
       "description": "Collects YouTube watch history — titles, descriptions, top comments",
       "schedule_hours": 3,
       "checksum": ""
@@ -17,6 +18,7 @@
       "version": "0.1.0",
       "file": "chatgpt_history.py",
       "target_site": "chatgpt.com",
+      "auth_provider": "openai",
       "description": "Collects ChatGPT conversation history — all messages, thinking blocks, artifacts",
       "schedule_hours": 3,
       "checksum": ""
@@ -26,6 +28,7 @@
       "version": "0.1.0",
       "file": "gemini_history.py",
       "target_site": "gemini.google.com",
+      "auth_provider": "google",
       "description": "Collects Gemini conversation history — all messages, thinking blocks",
       "schedule_hours": 3,
       "checksum": ""

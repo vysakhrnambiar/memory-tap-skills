@@ -137,6 +137,19 @@ def init_db(db_path: str | None = None):
         )
     """)
 
+    # --- Alerts (dashboard notifications) ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            level TEXT NOT NULL DEFAULT 'warning',
+            source TEXT NOT NULL DEFAULT 'system',
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            dismissed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
     # --- FTS5 for full-text search ---
     cur.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -203,5 +216,42 @@ def set_setting(key: str, value: str, db_path: str | None = None):
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
         (key, value),
     )
+    conn.commit()
+    conn.close()
+
+
+def add_alert(title: str, message: str, level: str = "warning",
+              source: str = "system", db_path: str | None = None):
+    """Add a dashboard alert. Levels: info, warning, error."""
+    conn = get_connection(db_path)
+    conn.execute(
+        "INSERT INTO alerts (level, source, title, message) VALUES (?, ?, ?, ?)",
+        (level, source, title, message),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_alerts(include_dismissed: bool = False, limit: int = 20,
+               db_path: str | None = None) -> list[dict]:
+    """Get recent alerts."""
+    conn = get_connection(db_path)
+    if include_dismissed:
+        rows = conn.execute(
+            "SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM alerts WHERE dismissed = 0 ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def dismiss_alert(alert_id: int, db_path: str | None = None):
+    """Dismiss an alert."""
+    conn = get_connection(db_path)
+    conn.execute("UPDATE alerts SET dismissed = 1 WHERE id = ?", (alert_id,))
     conn.commit()
     conn.close()

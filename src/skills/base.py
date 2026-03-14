@@ -8,10 +8,13 @@ Skills are published to: https://github.com/vysakhrnambiar/memory-tap-skills
 The system auto-pulls new versions from that repo.
 """
 import logging
+import os
+import urllib.parse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from ..cdp_client import CDPTab, CDPClient
+from ..db.models import add_alert, get_connection
 from ..db.sync_tracker import SyncTracker
 
 logger = logging.getLogger("memory_tap.skill")
@@ -24,6 +27,7 @@ class SkillManifest:
     version: str                 # semver e.g. "1.0.0"
     target_url: str              # e.g. "https://youtube.com"
     description: str             # human-readable
+    auth_provider: str = ""      # "google", "openai", etc — groups sign-in on dashboard
     schedule_hours: int = 3      # how often to run
     login_url: str = ""          # URL to show user for manual login
     checksum: str = ""           # sha256 of the skill file
@@ -87,6 +91,64 @@ class BaseSkill(ABC):
         """URL to open for user to log in. Defaults to target_url."""
         return self.manifest.login_url or self.manifest.target_url
 
+    @staticmethod
+    def _get_previous_item_count(skill_name: str, db_path: str | None = None) -> int:
+        """Check how many items this skill collected in previous runs."""
+        conn = get_connection(db_path)
+        # Check conversations
+        row = conn.execute(
+            "SELECT COUNT(*) as c FROM conversations WHERE source = ?", (skill_name,)
+        ).fetchone()
+        conv_count = row["c"] if row else 0
+        # Check videos (for youtube)
+        vid_count = 0
+        if "youtube" in skill_name:
+            row = conn.execute("SELECT COUNT(*) as c FROM youtube_videos").fetchone()
+            vid_count = row["c"] if row else 0
+        conn.close()
+        return conv_count + vid_count
+
+    @staticmethod
+    def _save_error_screenshot(tab: CDPTab, skill_name: str) -> str | None:
+        """Take a screenshot on error/warning for debugging."""
+        try:
+            screenshots_dir = os.path.join(
+                os.environ.get("LOCALAPPDATA", ""), "MemoryTap", "logs", "screenshots"
+            )
+            os.makedirs(screenshots_dir, exist_ok=True)
+            import time as _time
+            path = os.path.join(
+                screenshots_dir,
+                f"{skill_name}_{int(_time.time())}.png",
+            )
+            tab.screenshot(path)
+            logger.info("Error screenshot saved: %s", path)
+            return path
+        except Exception as e:
+            logger.warning("Failed to save screenshot: %s", e)
+            return None
+
+    @staticmethod
+    def _build_github_issue_url(manifest: 'SkillManifest', prev_count: int,
+                                 screenshot_path: str | None) -> str:
+        """Build a pre-filled GitHub issue URL. No personal data included."""
+        title = f"[{manifest.name}] Zero items found — possible site change"
+        body = (
+            f"## Skill Info\n"
+            f"- **Skill**: {manifest.name}\n"
+            f"- **Version**: {manifest.version}\n"
+            f"- **Target URL**: {manifest.target_url}\n\n"
+            f"## Problem\n"
+            f"Previously collected {prev_count} items, but latest run found 0.\n"
+            f"The website may have changed its layout or CSS selectors.\n\n"
+            f"## Screenshot\n"
+            f"{'Please attach the screenshot from: ' + screenshot_path if screenshot_path else 'No screenshot available'}\n\n"
+            f"## Expected\n"
+            f"Skill should find and collect items from the conversation/history list.\n"
+        )
+        params = urllib.parse.urlencode({"title": title, "body": body})
+        return f"https://github.com/vysakhrnambiar/memory-tap-skills/issues/new?{params}"
+
     def run(self, client: CDPClient, db_path: str | None = None) -> CollectResult:
         """Full skill execution: check login → collect → report.
 
@@ -96,15 +158,31 @@ class BaseSkill(ABC):
         tracker = SyncTracker(m.name, db_path)
         log_id = tracker.start_sync()
 
+        # Recall: assess browser state, close orphans, ensure clean slate
+        snapshot = client.recall()
+        if not snapshot["ready"]:
+            error_msg = f"Browser not in clean state: {snapshot['tab_count']} tabs open"
+            logger.error("Skill %s aborted: %s", m.name, error_msg)
+            tracker.finish_sync(0, 0, 0, error=error_msg)
+            return CollectResult(error=error_msg)
+
         tab = None
         try:
             tab = client.new_tab(m.target_url)
+            tab.set_working()
 
             # Check login
             if not self.check_login(tab):
+                screenshot_path = self._save_error_screenshot(tab, f"{m.name}_login_fail")
                 tracker.set_login_status("not_logged_in")
-                result = CollectResult(error=f"Not logged in to {m.target_url}")
-                tracker.finish_sync(0, 0, 0, error=result.error)
+                error_msg = (
+                    f"Not logged in to {m.name}. "
+                    f"Please open the dashboard and sign into {m.target_url}"
+                )
+                logger.warning("Skill %s: %s", m.name, error_msg)
+                result = CollectResult(error=error_msg)
+                result.details["screenshot"] = screenshot_path
+                tracker.finish_sync(0, 0, 0, error=error_msg)
                 return result
 
             tracker.set_login_status("logged_in")
@@ -119,17 +197,49 @@ class BaseSkill(ABC):
                 "Skill %s: found=%d new=%d updated=%d",
                 m.name, result.items_found, result.items_new, result.items_updated,
             )
+
+            # Zero-items warning: if logged in but found nothing, and we had data before
+            if result.items_found == 0 and result.success:
+                prev_count = self._get_previous_item_count(m.name, db_path)
+                if prev_count > 0:
+                    # Possible site change — take screenshot and alert
+                    screenshot_path = self._save_error_screenshot(tab, m.name)
+                    github_url = self._build_github_issue_url(m, prev_count, screenshot_path)
+                    add_alert(
+                        f"{m.name}: No data found",
+                        f"Previously had {prev_count} items, now found 0. "
+                        f"The website may have changed its layout. "
+                        f"Please report this issue.",
+                        level="warning",
+                        source=m.name,
+                        db_path=db_path,
+                    )
+                    result.details["zero_items_warning"] = True
+                    result.details["previous_count"] = prev_count
+                    result.details["github_issue_url"] = github_url
+                    result.details["screenshot"] = screenshot_path
+                    logger.warning(
+                        "Skill %s: ZERO items found but previously had %d — possible site change",
+                        m.name, prev_count,
+                    )
+
             return result
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
             logger.error("Skill %s failed: %s", m.name, error_msg)
+            screenshot_path = None
+            if tab:
+                screenshot_path = self._save_error_screenshot(tab, f"{m.name}_error")
             tracker.finish_sync(0, 0, 0, error=error_msg)
-            return CollectResult(error=error_msg)
+            result = CollectResult(error=error_msg)
+            result.details["screenshot"] = screenshot_path
+            return result
 
         finally:
             if tab:
                 try:
+                    tab.set_idle()
                     client.close_tab(tab)
                 except Exception:
                     pass

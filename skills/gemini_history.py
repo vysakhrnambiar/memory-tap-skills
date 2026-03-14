@@ -20,22 +20,14 @@ import time
 
 logger = logging.getLogger("memory_tap.skill.gemini")
 
-try:
-    from memory_tap.src.skills.base import BaseSkill, SkillManifest, CollectResult
-    from memory_tap.src.cdp_client import CDPTab
-    from memory_tap.src.db.sync_tracker import SyncTracker
-    from memory_tap.src.human import (
-        scroll_slowly, scroll_to_bottom, click_at, click_element, click_text,
-        wait_human, watch_page, move_mouse,
-    )
-except ImportError:
-    from src.skills.base import BaseSkill, SkillManifest, CollectResult
-    from src.cdp_client import CDPTab
-    from src.db.sync_tracker import SyncTracker
-    from src.human import (
-        scroll_slowly, scroll_to_bottom, click_at, click_element, click_text,
-        wait_human, watch_page, move_mouse,
-    )
+# These imports resolve because the scheduler injects the project root into sys.path
+from src.skills.base import BaseSkill, SkillManifest, CollectResult
+from src.cdp_client import CDPTab
+from src.db.sync_tracker import SyncTracker
+from src.human import (
+    scroll_slowly, scroll_to_bottom, click_at, click_element, click_text,
+    wait_human, watch_page, move_mouse,
+)
 
 
 class GeminiHistorySkill(BaseSkill):
@@ -48,39 +40,41 @@ class GeminiHistorySkill(BaseSkill):
             version=__version__,
             target_url="https://gemini.google.com/app",
             description="Collects Gemini conversations — messages, thinking blocks",
+            auth_provider="google",
             schedule_hours=3,
             login_url="https://accounts.google.com/ServiceLogin?continue=https://gemini.google.com/app",
         )
 
     def check_login(self, tab: CDPTab) -> bool:
-        """Check if logged into Gemini."""
+        """Check if logged into Gemini.
+
+        Verified detection (2026-03-14 CDP probe):
+        - Logged in:  SID cookie on .google.com, Google Account button visible,
+                      no "Sign in" text
+        - Not logged in: no SID/SSID/HSID cookies, "Sign in" text visible
+        Note: rich-textarea and contenteditable exist even when NOT logged in.
+        """
         tab.navigate("https://gemini.google.com/app")
         wait_human(3, 5)
 
-        # Look for user avatar or profile indicator
-        logged_in = tab.js("""
-            // Google avatar/profile button
-            var avatar = document.querySelector(
-                'img[aria-label*="Google Account"], a[aria-label*="Google Account"], ' +
-                'button[aria-label*="Google Account"], .gb_A'
-            );
-            // Or the chat input
-            var input = document.querySelector(
-                'rich-textarea, [contenteditable="true"], textarea'
-            );
-            return !!(avatar || input);
-        """)
+        # Primary: check for SID cookie on .google.com (most reliable)
+        result = tab._send("Network.getCookies")
+        if isinstance(result, dict) and "_error" not in result:
+            cookies = result.get("cookies", [])
+            google_auth = [c for c in cookies
+                           if c.get("name") == "SID" and ".google.com" in c.get("domain", "")]
+            if google_auth:
+                logger.info("Gemini: logged in (SID cookie found)")
+                return True
 
-        if logged_in:
-            logger.info("Gemini: logged in")
-            return True
-
+        # Secondary: check for "Sign in" text
         if tab.has_text("Sign in"):
-            logger.info("Gemini: not logged in")
+            logger.info("Gemini: not logged in (Sign in text visible)")
             return False
 
-        logger.info("Gemini: login status unclear, assuming logged in")
-        return True
+        # If unclear — NOT logged in (never assume)
+        logger.info("Gemini: login unclear, treating as not logged in")
+        return False
 
     def collect(self, tab: CDPTab, tracker: SyncTracker) -> CollectResult:
         """Collect conversations from Gemini."""

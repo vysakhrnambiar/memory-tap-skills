@@ -18,17 +18,36 @@ import queue
 import requests
 import websocket
 
-from .chrome_manager import CDP_PORT
+from .chrome_manager import get_active_port
+from .db.models import add_alert
 
 logger = logging.getLogger("memory_tap.cdp")
+
+
+class TabState:
+    """Tab lifecycle states."""
+    CREATED = "created"
+    CONNECTING = "connecting"
+    IDLE = "idle"
+    NAVIGATING = "navigating"
+    LOADED = "loaded"
+    WORKING = "working"
+    CLOSING = "closing"
+    CLOSED = "closed"
 
 
 class CDPTab:
     """A single browser tab with reliable CDP communication.
 
-    Key improvement: events stored by method name in separate queues.
-    Waiting for Page.loadEventFired never discards Network events.
+    Key improvements:
+    - Events stored by method name in separate queues (no lost events)
+    - State machine tracks lifecycle: CREATED → IDLE → NAVIGATING → LOADED → WORKING → CLOSED
     """
+
+    # States that allow navigation
+    _READY_STATES = {TabState.IDLE, TabState.LOADED}
+    # States that allow any operation
+    _USABLE_STATES = {TabState.IDLE, TabState.LOADED, TabState.NAVIGATING, TabState.WORKING}
 
     def __init__(self, tab_id: str, ws_url: str, url: str, cdp_base_url: str):
         self.id = tab_id
@@ -44,12 +63,14 @@ class CDPTab:
         self._recv_thread: threading.Thread | None = None
         self._running = False
         self._lock = threading.Lock()
+        self.state = TabState.CREATED
 
     # --- Connection ---
 
     def connect(self):
         if self.ws is not None:
             return self
+        self.state = TabState.CONNECTING
         self.ws = websocket.create_connection(self.ws_url, timeout=30)
         self._running = True
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -60,6 +81,7 @@ class CDPTab:
         self._send("DOM.enable")
         self._send("Network.enable")
         self._send("Input.enable")
+        self.state = TabState.IDLE
         return self
 
     def reconnect(self):
@@ -78,6 +100,7 @@ class CDPTab:
         self.connect()
 
     def disconnect(self):
+        self.state = TabState.CLOSING
         self._running = False
         if self.ws:
             try:
@@ -90,10 +113,18 @@ class CDPTab:
         self._recv_thread = None
         self._responses.clear()
         self._event_queues.clear()
+        self.state = TabState.CLOSED
 
     def _recv_loop(self):
-        """Background thread: routes responses by ID, events by method name."""
-        while self._running and self.ws:
+        """Background thread: routes responses by ID, events by method name.
+
+        On WebSocket drop: attempts reconnect with exponential backoff (1s, 2s, 4s).
+        Max 3 retries. If all fail, marks tab as CLOSED.
+        """
+        max_retries = 3
+        while self._running:
+            if not self.ws:
+                break
             try:
                 self.ws.settimeout(1.0)
                 raw = self.ws.recv()
@@ -107,21 +138,99 @@ class CDPTab:
             except websocket.WebSocketTimeoutException:
                 continue
             except (websocket.WebSocketConnectionClosedException, OSError):
-                break
+                if not self._running:
+                    break
+                # WebSocket dropped — diagnose why before retrying
+                logger.warning("WebSocket dropped for tab %s — diagnosing...", self.id[:8])
+
+                # Diagnosis 1: Is Chrome process alive?
+                chrome_alive = False
+                try:
+                    resp = requests.get(f"{self._cdp_base_url}/json/version", timeout=3)
+                    chrome_alive = resp.status_code == 200
+                except Exception:
+                    pass
+
+                if not chrome_alive:
+                    logger.error("Chrome is not responding — process likely closed or crashed")
+                    add_alert("Chrome Closed", "Chrome was closed or crashed. Skills cannot run until Chrome is restarted.", level="error", source="cdp")
+                    self.state = TabState.CLOSED
+                    break
+
+                # Diagnosis 2: Does our tab still exist?
+                tab_exists = False
+                try:
+                    resp = requests.get(f"{self._cdp_base_url}/json", timeout=3)
+                    tab_ids = [t["id"] for t in resp.json() if t.get("type") == "page"]
+                    tab_exists = self.id in tab_ids
+                except Exception:
+                    pass
+
+                if not tab_exists:
+                    logger.error("Tab %s no longer exists — was closed", self.id[:8])
+                    add_alert("Tab Closed", f"Browser tab was closed unexpectedly during operation.", level="warning", source="cdp")
+                    self.state = TabState.CLOSED
+                    break
+
+                # Chrome is alive and tab exists — WS endpoint may have changed, retry
+                logger.info("Chrome alive, tab exists — attempting WS reconnect...")
+                reconnected = False
+                for attempt in range(max_retries):
+                    backoff = 2 ** attempt  # 1s, 2s, 4s
+                    time.sleep(backoff)
+                    if not self._running:
+                        break
+                    try:
+                        resp = requests.get(f"{self._cdp_base_url}/json", timeout=3)
+                        for tab_info in resp.json():
+                            if tab_info["id"] == self.id and "webSocketDebuggerUrl" in tab_info:
+                                self.ws_url = tab_info["webSocketDebuggerUrl"]
+                                break
+                        self.ws = websocket.create_connection(self.ws_url, timeout=10)
+                        for domain in ["Page", "Runtime", "DOM", "Network", "Input"]:
+                            msg = {"id": 0, "method": f"{domain}.enable", "params": {}}
+                            self.ws.send(json.dumps(msg))
+                        logger.info("Reconnected tab %s on attempt %d", self.id[:8], attempt + 1)
+                        reconnected = True
+                        break
+                    except Exception as e:
+                        logger.warning("Reconnect attempt %d failed: %s", attempt + 1, e)
+
+                if not reconnected:
+                    logger.error("All %d reconnect attempts failed for tab %s — marking as CLOSED",
+                                 max_retries, self.id[:8])
+                    add_alert("Connection Lost", f"Lost connection to browser tab after {max_retries} retry attempts.", level="error", source="cdp")
+                    self.state = TabState.CLOSED
+                    break
             except Exception:
+                if not self._running:
+                    break
+                logger.warning("Unexpected error in recv_loop for tab %s", self.id[:8])
                 break
 
     # --- Low-level send/receive ---
 
     def _send(self, method: str, params: dict | None = None, timeout: float = 30) -> dict:
-        """Send CDP command and wait for response."""
+        """Send CDP command and wait for response.
+
+        Thread-safe: lock covers both ID increment and ws.send() to prevent
+        interleaved writes from concurrent callers. Response wait is outside
+        the lock so it doesn't block other sends.
+        """
         if not self.ws:
             raise RuntimeError("Not connected")
+
+        # Lock covers ID assignment + socket write (atomic send)
         with self._lock:
             self._msg_id += 1
             msg_id = self._msg_id
-        msg = {"id": msg_id, "method": method, "params": params or {}}
-        self.ws.send(json.dumps(msg))
+            msg = {"id": msg_id, "method": method, "params": params or {}}
+            try:
+                self.ws.send(json.dumps(msg))
+            except Exception as e:
+                return {"_error": f"send failed: {e}"}
+
+        # Wait for response (outside lock — doesn't block other sends)
         deadline = time.time() + timeout
         while time.time() < deadline:
             if msg_id in self._responses:
@@ -158,10 +267,129 @@ class CDPTab:
         except queue.Empty:
             return None
 
+    # --- State management ---
+
+    def set_working(self):
+        """Mark tab as actively being used by a skill."""
+        self.state = TabState.WORKING
+
+    def set_idle(self):
+        """Mark tab as idle (skill finished its work)."""
+        if self.state != TabState.CLOSED:
+            self.state = TabState.IDLE
+
+    @property
+    def is_ready(self) -> bool:
+        """True if tab is in a state that allows navigation/interaction."""
+        return self.state in self._READY_STATES
+
+    @property
+    def is_usable(self) -> bool:
+        """True if tab can be used for any operation."""
+        return self.state in self._USABLE_STATES
+
+    # --- Heartbeat ---
+
+    def ping(self, timeout: float = 5) -> bool:
+        """Quick health check — evaluates `return 1` in JS.
+
+        Returns True if tab is responsive, False if dead/frozen.
+        Used by health monitor and checkpoint.
+        """
+        try:
+            result = self.js("return 1", timeout=timeout)
+            return result == 1
+        except Exception:
+            return False
+
+    # --- Checkpoint ---
+
+    def checkpoint(self, expected_url_contains: str | None = None) -> dict:
+        """Verify page state before a major action.
+
+        Returns:
+            {
+                "ok": bool,           # True if everything looks good
+                "url": str,           # Current URL
+                "ready_state": str,   # document.readyState
+                "url_match": bool,    # Does URL contain expected pattern?
+                "has_overlay": bool,  # Cookie banner, dialog, etc detected
+                "ws_alive": bool,     # WebSocket still connected
+                "issues": [str],      # List of problems found
+            }
+        """
+        issues = []
+
+        # 1. Is WebSocket alive?
+        ws_alive = self.ws is not None and self._running
+        if not ws_alive:
+            issues.append("WebSocket disconnected")
+            return {
+                "ok": False, "url": "", "ready_state": "unknown",
+                "url_match": False, "has_overlay": False,
+                "ws_alive": False, "issues": issues,
+            }
+
+        # 2. Quick JS ping — confirms tab is responsive
+        if not self.ping():
+            issues.append("Tab not responsive (JS ping failed)")
+            return {
+                "ok": False, "url": "", "ready_state": "unknown",
+                "url_match": False, "has_overlay": False,
+                "ws_alive": True, "issues": issues,
+            }
+
+        # 3. Current URL
+        url = self.get_url()
+
+        # 4. URL match check
+        url_match = True
+        if expected_url_contains:
+            url_match = expected_url_contains.lower() in url.lower()
+            if not url_match:
+                issues.append(f"URL mismatch: expected '{expected_url_contains}' in '{url}'")
+
+        # 5. Page ready state
+        ready_state = self.js("return document.readyState") or "unknown"
+        if ready_state not in ("complete", "interactive"):
+            issues.append(f"Page not ready: readyState={ready_state}")
+
+        # 6. Check for blocking overlays (cookie banners, dialogs)
+        has_overlay = self.js("""
+            // Check for common overlay patterns
+            var overlay = document.querySelector(
+                '[class*="cookie"], [class*="consent"], [class*="modal"][style*="display"],' +
+                '[class*="overlay"][style*="display"], [role="dialog"][aria-modal="true"]'
+            );
+            if (overlay) {
+                var r = overlay.getBoundingClientRect();
+                return r.width > 100 && r.height > 100;
+            }
+            return false;
+        """) or False
+        if has_overlay:
+            issues.append("Blocking overlay detected (cookie banner or dialog)")
+
+        ok = len(issues) == 0
+        if not ok:
+            logger.warning("Checkpoint issues: %s", "; ".join(issues))
+
+        return {
+            "ok": ok, "url": url, "ready_state": ready_state,
+            "url_match": url_match, "has_overlay": has_overlay,
+            "ws_alive": ws_alive, "issues": issues,
+        }
+
     # --- Navigation ---
 
     def navigate(self, url: str, timeout: float = 30):
-        """Navigate and wait for full page load."""
+        """Navigate and wait for full page load.
+
+        Fallback: if Page.loadEventFired doesn't arrive within 10s,
+        checks document.readyState as alternative. Heavy SPAs may not
+        fire the load event reliably.
+        """
+        self.state = TabState.NAVIGATING
         self.drain_events("Page.loadEventFired")
 
         result = self._send("Page.navigate", {"url": url}, timeout=15)
@@ -170,9 +398,23 @@ class CDPTab:
             self.drain_events("Page.loadEventFired")
             result = self._send("Page.navigate", {"url": url}, timeout=15)
 
-        self.wait_for_event("Page.loadEventFired", timeout=timeout)
+        # Wait for load event with fallback
+        load_timeout = min(timeout, 10)
+        evt = self.wait_for_event("Page.loadEventFired", timeout=load_timeout)
+
+        if evt is None:
+            # Load event didn't fire — check readyState as fallback
+            ready = self.js("return document.readyState", timeout=5)
+            if ready in ("complete", "interactive"):
+                logger.info("Navigate: load event timeout but readyState=%s — proceeding", ready)
+            else:
+                # Wait a bit more then force-proceed with warning
+                logger.warning("Navigate: no load event and readyState=%s — waiting 5s more", ready)
+                time.sleep(5)
+
         time.sleep(1.5)  # settle for JS rendering
         self.url = self.js("return window.location.href") or url
+        self.state = TabState.LOADED
 
     def wait_for_navigation(self, timeout: float = 30):
         """Wait for click-initiated navigation to complete."""
@@ -390,9 +632,9 @@ class CDPClient:
             # ... collect data ...
     """
 
-    def __init__(self, port: int = CDP_PORT):
-        self.port = port
-        self.base_url = f"http://localhost:{port}"
+    def __init__(self, port: int | None = None):
+        self.port = port or get_active_port()
+        self.base_url = f"http://localhost:{self.port}"
         self._tabs: list[CDPTab] = []
 
     def __enter__(self):
@@ -419,8 +661,94 @@ class CDPClient:
         except Exception:
             return []
 
+    def recall(self) -> dict:
+        """Assess the current browser landscape before acting.
+
+        Returns a snapshot:
+            {
+                "tab_count": int,
+                "tabs": [{"id": str, "url": str, "title": str}, ...],
+                "orphans_closed": int,
+                "ready": bool,
+            }
+
+        Closes any orphaned tabs (non-about:blank tabs we don't own).
+        Ensures a clean single-tab state before a skill starts.
+        """
+        all_tabs = self.list_tabs()
+        snapshot = {
+            "tab_count": len(all_tabs),
+            "tabs": [{"id": t["id"], "url": t.get("url", ""), "title": t.get("title", "")} for t in all_tabs],
+            "orphans_closed": 0,
+            "ready": True,
+        }
+
+        logger.info("Recall: %d tab(s) open", len(all_tabs))
+
+        # Track which tab IDs we own
+        owned_ids = {tab.id for tab in self._tabs}
+
+        # Close orphaned tabs (tabs we didn't open)
+        for tab_info in all_tabs:
+            tab_id = tab_info["id"]
+            tab_url = tab_info.get("url", "")
+
+            if tab_id in owned_ids:
+                # We own this tab — leave it
+                logger.info("  Tab %s: owned (%s)", tab_id[:8], tab_url[:60])
+                continue
+
+            if tab_url in ("about:blank", "chrome://newtab/", ""):
+                # Blank tab — leave one, close extras
+                if len(all_tabs) > 1:
+                    logger.info("  Tab %s: blank orphan, closing", tab_id[:8])
+                    try:
+                        requests.get(f"{self.base_url}/json/close/{tab_id}", timeout=3)
+                        snapshot["orphans_closed"] += 1
+                    except Exception:
+                        pass
+                else:
+                    logger.info("  Tab %s: only blank tab, keeping", tab_id[:8])
+            else:
+                # Non-blank orphan — close it
+                logger.info("  Tab %s: orphan on %s, closing", tab_id[:8], tab_url[:60])
+                try:
+                    requests.get(f"{self.base_url}/json/close/{tab_id}", timeout=3)
+                    snapshot["orphans_closed"] += 1
+                except Exception:
+                    pass
+
+        if snapshot["orphans_closed"] > 0:
+            logger.info("Recall: closed %d orphaned tab(s)", snapshot["orphans_closed"])
+
+        # Re-check state after cleanup
+        remaining = self.list_tabs()
+        snapshot["tab_count"] = len(remaining)
+        snapshot["tabs"] = [{"id": t["id"], "url": t.get("url", ""), "title": t.get("title", "")} for t in remaining]
+
+        if len(remaining) > 5:
+            logger.warning("Recall: still %d tabs open after cleanup — something is wrong", len(remaining))
+            snapshot["ready"] = False
+
+        return snapshot
+
     def new_tab(self, url: str = "about:blank") -> CDPTab:
-        """Create a new tab and optionally navigate to URL."""
+        """Create a new tab and optionally navigate to URL.
+
+        Enforces max 1 active tab. If a tab already exists, closes it first.
+        """
+        # Max 1 tab: close any existing tabs we own
+        if self._tabs:
+            logger.warning("Max 1 tab enforced — closing %d existing tab(s) before opening new one",
+                           len(self._tabs))
+            for old_tab in list(self._tabs):
+                try:
+                    old_tab.disconnect()
+                    requests.get(f"{self.base_url}/json/close/{old_tab.id}", timeout=3)
+                except Exception:
+                    pass
+            self._tabs.clear()
+
         for method in [requests.put, requests.get]:
             try:
                 resp = method(f"{self.base_url}/json/new?url=about:blank", timeout=10)

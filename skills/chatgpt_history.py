@@ -22,22 +22,14 @@ import time
 
 logger = logging.getLogger("memory_tap.skill.chatgpt")
 
-try:
-    from memory_tap.src.skills.base import BaseSkill, SkillManifest, CollectResult
-    from memory_tap.src.cdp_client import CDPTab
-    from memory_tap.src.db.sync_tracker import SyncTracker
-    from memory_tap.src.human import (
-        scroll_slowly, scroll_to_bottom, click_at, click_element, click_text,
-        wait_human, watch_page, move_mouse,
-    )
-except ImportError:
-    from src.skills.base import BaseSkill, SkillManifest, CollectResult
-    from src.cdp_client import CDPTab
-    from src.db.sync_tracker import SyncTracker
-    from src.human import (
-        scroll_slowly, scroll_to_bottom, click_at, click_element, click_text,
-        wait_human, watch_page, move_mouse,
-    )
+# These imports resolve because the scheduler injects the project root into sys.path
+from src.skills.base import BaseSkill, SkillManifest, CollectResult
+from src.cdp_client import CDPTab
+from src.db.sync_tracker import SyncTracker
+from src.human import (
+    scroll_slowly, scroll_to_bottom, click_at, click_element, click_text,
+    wait_human, watch_page, move_mouse,
+)
 
 
 class ChatGPTHistorySkill(BaseSkill):
@@ -50,35 +42,41 @@ class ChatGPTHistorySkill(BaseSkill):
             version=__version__,
             target_url="https://chatgpt.com",
             description="Collects ChatGPT conversations — messages, thinking blocks, artifacts",
+            auth_provider="openai",
             schedule_hours=3,
             login_url="https://chatgpt.com/auth/login",
         )
 
     def check_login(self, tab: CDPTab) -> bool:
-        """Check if logged into ChatGPT."""
+        """Check if logged into ChatGPT.
+
+        Verified detection (2026-03-14 CDP probe):
+        - Logged in:  __Secure-next-auth.session-token.0 cookie on .chatgpt.com,
+                      no "Log in" or "Sign up" text visible
+        - Not logged in: no session-token cookie, "Log in" and "Sign up" text visible,
+                         __Secure-next-auth.callback-url exists but is NOT auth
+        Note: contenteditable and nav sidebar exist even when NOT logged in.
+        """
         tab.navigate("https://chatgpt.com")
         wait_human(3, 5)
 
-        # Look for the chat input or sidebar — indicates logged in
-        logged_in = tab.js("""
-            // Chat input exists = logged in
-            var input = document.querySelector('textarea, [contenteditable="true"], #prompt-textarea');
-            // Or sidebar with conversations
-            var sidebar = document.querySelector('nav');
-            return !!(input || (sidebar && sidebar.textContent.includes('ChatGPT')));
-        """)
+        # Primary: check for session-token cookie (most reliable)
+        result = tab._send("Network.getCookies")
+        if isinstance(result, dict) and "_error" not in result:
+            cookies = result.get("cookies", [])
+            session_cookies = [c for c in cookies if "session-token" in c.get("name", "")]
+            if session_cookies:
+                logger.info("ChatGPT: logged in (session-token cookie found)")
+                return True
 
-        if logged_in:
-            logger.info("ChatGPT: logged in")
-            return True
-
-        # Check for login/signup buttons
+        # Secondary: check for "Log in" text
         if tab.has_text("Log in") or tab.has_text("Sign up"):
-            logger.info("ChatGPT: not logged in")
+            logger.info("ChatGPT: not logged in (Log in/Sign up text visible)")
             return False
 
-        logger.info("ChatGPT: login status unclear, assuming logged in")
-        return True
+        # If unclear — NOT logged in (never assume)
+        logger.info("ChatGPT: login unclear, treating as not logged in")
+        return False
 
     def collect(self, tab: CDPTab, tracker: SyncTracker) -> CollectResult:
         """Collect conversations from ChatGPT."""

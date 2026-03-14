@@ -7,12 +7,13 @@ Skills execute sequentially (one Chrome tab at a time).
 import importlib
 import logging
 import os
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
 
 from .cdp_client import CDPClient
-from .chrome_manager import ChromeManager
+from .chrome_manager import ChromeManager, HealthMonitor
 from .db.models import get_connection, init_db
 from .skills.base import BaseSkill
 
@@ -25,6 +26,7 @@ class SkillScheduler:
     def __init__(self, chrome: ChromeManager, db_path: str | None = None):
         self.chrome = chrome
         self.db_path = db_path
+        self.health = HealthMonitor(chrome)
         self._skills: dict[str, BaseSkill] = {}
         self._thread: threading.Thread | None = None
         self._running = False
@@ -62,11 +64,29 @@ class SkillScheduler:
                 logger.error("Failed to load skill %s: %s", filename, e)
 
     def _load_skill_file(self, filepath: str):
-        """Load a skill from a Python file."""
+        """Load a skill from a Python file.
+
+        Injects the project root into sys.path so skills can import from src.*
+        Skills use: from src.skills.base import BaseSkill, etc.
+        """
         import importlib.util
-        spec = importlib.util.spec_from_file_location("skill_module", filepath)
+
+        # Ensure src package is importable from wherever skills are loaded
+        # Find the directory that contains the 'src' package
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+
+        # Give each skill a unique module name to avoid collisions
+        module_name = f"memory_tap_skill_{os.path.basename(filepath).replace('.py', '')}"
+        spec = importlib.util.spec_from_file_location(module_name, filepath)
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+
+        try:
+            spec.loader.exec_module(module)
+        except Exception as e:
+            logger.error("Failed to execute skill %s: %s", filepath, e)
+            return
 
         # Find the skill class (subclass of BaseSkill)
         for attr_name in dir(module):
@@ -108,6 +128,13 @@ class SkillScheduler:
             logger.error("Skill not found: %s", skill_name)
             return None
 
+        # Check health before running
+        if self.health.last_check and not self.health.healthy:
+            logger.warning("Skipping skill %s — Chrome is unhealthy", skill_name)
+            return {"skill": skill_name, "success": False, "items_found": 0,
+                    "items_new": 0, "items_updated": 0,
+                    "error": "Chrome is not healthy. Check if Chrome is running."}
+
         if not self.chrome.is_running():
             if not self.chrome.ensure_running():
                 logger.error("Chrome not available")
@@ -122,20 +149,23 @@ class SkillScheduler:
                 "items_new": result.items_new,
                 "items_updated": result.items_updated,
                 "error": result.error,
+                "details": result.details,
             }
 
     def start(self):
-        """Start the scheduler background thread."""
+        """Start the scheduler background thread and health monitor."""
         if self._running:
             return
         self._running = True
+        self.health.start()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         logger.info("Scheduler started with %d skills", len(self._skills))
 
     def stop(self):
-        """Stop the scheduler."""
+        """Stop the scheduler and health monitor."""
         self._running = False
+        self.health.stop()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=10)
         self._thread = None

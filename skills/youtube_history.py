@@ -22,23 +22,14 @@ logger = logging.getLogger("memory_tap.skill.youtube")
 
 # These imports work when loaded by Memory Tap's skill engine
 # The skill engine injects the base classes at load time
-try:
-    from memory_tap.src.skills.base import BaseSkill, SkillManifest, CollectResult
-    from memory_tap.src.cdp_client import CDPTab
-    from memory_tap.src.db.sync_tracker import SyncTracker
-    from memory_tap.src.human import (
-        scroll_slowly, scroll_to_bottom, click_at, click_element,
-        wait_human, watch_page, move_mouse,
-    )
-except ImportError:
-    # Fallback for direct import — base classes provided by skill engine
-    from src.skills.base import BaseSkill, SkillManifest, CollectResult
-    from src.cdp_client import CDPTab
-    from src.db.sync_tracker import SyncTracker
-    from src.human import (
-        scroll_slowly, scroll_to_bottom, click_at, click_element,
-        wait_human, watch_page, move_mouse,
-    )
+# These imports resolve because the scheduler injects the project root into sys.path
+from src.skills.base import BaseSkill, SkillManifest, CollectResult
+from src.cdp_client import CDPTab
+from src.db.sync_tracker import SyncTracker
+from src.human import (
+    scroll_slowly, scroll_to_bottom, click_at, click_element,
+    wait_human, watch_page, move_mouse,
+)
 
 
 class YouTubeHistorySkill(BaseSkill):
@@ -51,25 +42,36 @@ class YouTubeHistorySkill(BaseSkill):
             version=__version__,
             target_url="https://www.youtube.com/feed/history",
             description="Collects YouTube watch history — titles, descriptions, top comments",
+            auth_provider="google",
             schedule_hours=3,
             login_url="https://accounts.google.com/ServiceLogin?service=youtube",
         )
 
     def check_login(self, tab: CDPTab) -> bool:
-        """Check if logged into YouTube by looking for avatar button."""
+        """Check if logged into YouTube.
+
+        Verified detection (2026-03-14 CDP probe):
+        - Logged in:  button#avatar-btn exists, title contains watch count like "(1113)",
+                      no "Sign in" text visible
+        - Not logged in: no avatar button, title is just "YouTube", "Sign in" text visible
+        """
         tab.navigate("https://www.youtube.com/feed/history")
         wait_human(2, 4)
 
-        # If we see "Sign in" button, not logged in
-        if tab.has_text("Sign in"):
-            # Double check — some pages show "Sign in" even when logged in
-            avatar = tab.query_selector("button#avatar-btn, img.ytd-topbar-menu-button-renderer")
-            if not avatar:
-                logger.info("YouTube: not logged in")
-                return False
+        # Primary: check for avatar button (most reliable indicator)
+        avatar = tab.query_selector("button#avatar-btn")
+        if avatar and avatar.get("visible"):
+            logger.info("YouTube: logged in (avatar button found)")
+            return True
 
-        logger.info("YouTube: logged in")
-        return True
+        # Secondary: check for "Sign in" text
+        if tab.has_text("Sign in"):
+            logger.info("YouTube: not logged in (Sign in text visible)")
+            return False
+
+        # If unclear — NOT logged in (never assume)
+        logger.info("YouTube: login unclear, treating as not logged in")
+        return False
 
     def collect(self, tab: CDPTab, tracker: SyncTracker) -> CollectResult:
         """Scroll through history and collect videos."""

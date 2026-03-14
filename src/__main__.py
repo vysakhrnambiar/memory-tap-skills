@@ -78,8 +78,15 @@ def _create_tray_icon():
             icon.stop()
             _shutdown()
 
+        def on_uninstall(icon, item):
+            logger.info("Uninstall from tray")
+            icon.stop()
+            _uninstall()
+
         menu = pystray.Menu(
             pystray.MenuItem("Open Dashboard", on_open_dashboard, default=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Uninstall Memory Tap", on_uninstall),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", on_quit),
         )
@@ -100,24 +107,115 @@ def _create_tray_icon():
 
 
 def _handle_first_run(chrome: ChromeManager):
-    """On first run, open Google sign-in in Chrome and dashboard in default browser."""
+    """On first run, open dashboard in the isolated Chrome (for sign-in wizard).
+    On subsequent runs, dashboard opens in user's default browser via tray icon.
+    """
     from .db.models import get_setting, set_setting
 
     if get_setting("first_run_done") == "yes":
         return
 
-    logger.info("First run detected — opening sign-in flow")
+    logger.info("First run detected — opening dashboard in isolated Chrome for sign-in wizard")
 
-    # Open Google sign-in in the Memory Tap Chrome instance
-    chrome.open_headed("https://accounts.google.com/ServiceLogin")
-
-    # Open dashboard in the user's default browser (not the isolated Chrome)
+    # First run: open dashboard in the ISOLATED Chrome (so user can sign in from there)
     import time
     time.sleep(2)
-    webbrowser.open(f"http://localhost:{DASHBOARD_PORT}")
+    chrome.open_headed(f"http://localhost:{DASHBOARD_PORT}")
 
     set_setting("first_run_done", "yes")
-    logger.info("First run setup complete — user needs to sign in to Chrome")
+    logger.info("First run setup complete — dashboard open in isolated Chrome")
+
+
+def _uninstall():
+    """Full uninstall: stop services, offer data export, remove files + registry."""
+    import ctypes
+    import shutil
+    import winreg
+
+    logger.info("Starting uninstall...")
+
+    LOCALAPPDATA = os.environ.get("LOCALAPPDATA", "")
+    INSTALL_DIR = os.path.join(LOCALAPPDATA, "MemoryTap")
+    DB_PATH = os.path.join(INSTALL_DIR, "memory_tap.db")
+    DOCUMENTS = os.path.join(os.path.expanduser("~"), "Documents")
+
+    # Ask: keep data?
+    try:
+        result = ctypes.windll.user32.MessageBoxW(
+            0,
+            "Do you want to keep a backup of your collected data?\n\n"
+            "Click YES to save a backup to your Documents folder.\n"
+            "Click NO to delete everything.\n"
+            "Click CANCEL to abort uninstall.",
+            "Uninstall Memory Tap",
+            0x23,  # YES/NO/CANCEL + question icon
+        )
+        if result == 2:  # CANCEL
+            logger.info("Uninstall cancelled by user")
+            return
+        keep_data = result == 6  # YES
+    except Exception:
+        keep_data = True  # Default to keeping data if dialog fails
+
+    # Stop services
+    if _scheduler:
+        _scheduler.stop()
+    if _updater:
+        _updater.stop()
+    if _chrome:
+        _chrome.shutdown()
+
+    # Export data if requested
+    if keep_data and os.path.isfile(DB_PATH):
+        try:
+            import time as _time
+            backup_name = f"MemoryTap_backup_{int(_time.time())}.db"
+            backup_path = os.path.join(DOCUMENTS, backup_name)
+            shutil.copy2(DB_PATH, backup_path)
+            logger.info("Data backed up to: %s", backup_path)
+        except Exception as e:
+            logger.error("Failed to backup data: %s", e)
+
+    # Remove startup registry
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        )
+        winreg.DeleteValue(key, "MemoryTap")
+        winreg.CloseKey(key)
+        logger.info("Removed startup registry entry")
+    except Exception:
+        pass
+
+    # Remove desktop shortcut
+    shortcut = os.path.join(os.path.expanduser("~"), "Desktop", "Memory Tap.url")
+    if os.path.isfile(shortcut):
+        try:
+            os.remove(shortcut)
+        except Exception:
+            pass
+
+    # Remove install directory
+    if os.path.isdir(INSTALL_DIR):
+        try:
+            shutil.rmtree(INSTALL_DIR, ignore_errors=True)
+            logger.info("Removed %s", INSTALL_DIR)
+        except Exception:
+            pass
+
+    # Show confirmation
+    try:
+        msg = "Memory Tap has been uninstalled."
+        if keep_data:
+            msg += f"\n\nYour data has been backed up to:\n{DOCUMENTS}"
+        ctypes.windll.user32.MessageBoxW(0, msg, "Memory Tap Uninstalled", 0x40)
+    except Exception:
+        pass
+
+    logger.info("Uninstall complete")
+    os._exit(0)
 
 
 def _shutdown():
