@@ -165,6 +165,54 @@ async def open_login(name: str):
     return {"status": "opened", "url": url}
 
 
+@app.post("/api/sources/{name}/check_login")
+async def check_login_status(name: str):
+    """Quick login check — navigates to site, checks cookies/DOM, updates status.
+
+    Called by the wizard after user signs in, to verify without running full collection.
+    """
+    if not _scheduler:
+        return JSONResponse({"error": "Not initialized"}, status_code=500)
+
+    skill = _scheduler._skills.get(name)
+    if not skill:
+        return JSONResponse({"error": f"Skill '{name}' not found"}, status_code=404)
+
+    from ..cdp_client import CDPClient
+    from ..db.sync_tracker import SyncTracker
+
+    try:
+        with CDPClient() as client:
+            tab = client.new_tab(skill.manifest.target_url)
+            logged_in = skill.check_login(tab)
+            client.close_tab(tab)
+
+            tracker = SyncTracker(skill.manifest.name, _db_path)
+            tracker.set_login_status("logged_in" if logged_in else "not_logged_in")
+
+            return {"name": name, "logged_in": logged_in}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/skills/check_updates")
+async def check_skill_updates():
+    """Check GitHub for new/updated skills and download them."""
+    if not _scheduler:
+        return JSONResponse({"error": "Not initialized"}, status_code=500)
+
+    from ..updater.skill_updater import SkillUpdater, LOCAL_SKILLS_DIR
+
+    updater = SkillUpdater()
+    updates = updater.check_updates()
+    if updates:
+        updated = updater.update_all()
+        # Reload skills in scheduler
+        _scheduler.load_skills_from_dir(LOCAL_SKILLS_DIR)
+        return {"updated": updated, "available": [u["name"] for u in updates]}
+    return {"updated": [], "available": []}
+
+
 # --- API: Timeline (history by day) ---
 
 @app.get("/api/timeline")

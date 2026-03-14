@@ -322,6 +322,7 @@
             </div>
             <div style="margin-top:16px">
                 <button class="btn primary" onclick="saveSettings()">Save Settings</button>
+                <button class="btn" onclick="checkForUpdates()" style="margin-left:8px">Check for Skill Updates</button>
             </div>
         </div>
     </div>
@@ -466,17 +467,37 @@
                 const resp = await fetch(`/api/sources/${skillName}/login`, { method: 'POST' });
                 const data = await resp.json();
                 if (data.url) {
-                    alert(`A Chrome window has opened to sign into ${providerName}.\n\nPlease complete the sign-in, then come back here.\nThe wizard will update automatically.`);
+                    alert(`A Chrome window has opened to sign into ${providerName}.\n\nPlease complete the sign-in, then come back here and click "Verify Login".`);
                 }
-                // Poll for sign-in completion
+                // Poll: verify login status by actually checking cookies/DOM
                 let checks = 0;
                 const poll = setInterval(async () => {
                     checks++;
-                    if (checks > 60) { clearInterval(poll); return; } // stop after 5 min
-                    checkSignInStatus();
-                    loadSources();
-                }, 5000);
+                    if (checks > 60) { clearInterval(poll); return; }
+                    // Quick login check via CDP
+                    try {
+                        const r = await fetch(`/api/sources/${skillName}/check_login`, { method: 'POST' });
+                        const result = await r.json();
+                        if (result.logged_in) {
+                            clearInterval(poll);
+                            checkSignInStatus();
+                            loadSources();
+                        }
+                    } catch(e) {}
+                }, 10000); // check every 10s
             } catch(e) { alert('Failed to open sign-in: ' + e); }
+        }
+
+        async function checkForUpdates() {
+            const resp = await fetch('/api/skills/check_updates', { method: 'POST' });
+            const data = await resp.json();
+            if (data.updated && data.updated.length > 0) {
+                alert('Updated skills: ' + data.updated.join(', '));
+            } else {
+                alert('All skills are up to date.');
+            }
+            loadSources();
+            checkSignInStatus();
         }
 
         async function loadStats() {

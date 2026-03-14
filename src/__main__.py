@@ -271,41 +271,23 @@ def _shutdown():
 
 
 def _show_splash():
-    """Show a brief 'Setting up...' notification while app starts.
+    """Show a brief 'Setting up...' message while app starts.
 
-    Uses Windows toast notification via PowerShell.
-    Auto-disappears, no buttons, no user interaction needed.
+    Uses MessageBoxTimeoutW — auto-closes after 3 seconds.
+    User can click OK to dismiss early, or just wait.
     """
     try:
-        import subprocess as _sp
-        # Use PowerShell to show a Windows toast notification
-        ps_cmd = """
-        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-        [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-        $template = '<toast><visual><binding template="ToastText02"><text id="1">Memory Tap</text><text id="2">Setting up database, downloading skills, launching Chrome...</text></binding></visual></toast>'
-        $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-        $xml.LoadXml($template)
-        $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Memory Tap').Show($toast)
-        """
-        _sp.Popen(
-            ["powershell", "-WindowStyle", "Hidden", "-Command", ps_cmd],
-            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
-            creationflags=_sp.CREATE_NO_WINDOW,
+        import ctypes
+        ctypes.windll.user32.MessageBoxTimeoutW(
+            0,
+            "Setting up... this will close automatically.",
+            "Memory Tap",
+            0x00040040,  # MB_ICONINFORMATION | MB_TOPMOST
+            0,  # language
+            3000,  # auto-close after 3 seconds
         )
     except Exception:
-        # Fallback: simple MessageBox with auto-close
-        try:
-            import ctypes
-            ctypes.windll.user32.MessageBoxTimeoutW(
-                0,
-                "Setting up database, downloading skills, launching Chrome...",
-                "Memory Tap — Starting",
-                0x00040040,  # MB_ICONINFORMATION | MB_TOPMOST
-                0, 5000,  # auto-close 5 seconds
-            )
-        except Exception:
-            pass
+        pass
 
 
 def main():
@@ -329,13 +311,16 @@ def main():
         logger.error("Failed to start Chrome. Exiting.")
         sys.exit(1)
 
-    # 3. Start Skill Updater (downloads skills from GitHub)
-    _updater = SkillUpdater()
-    _updater.start()
-
-    # Give updater a moment to download initial skills
+    # 3. Download skills from GitHub (blocking on first run, so all skills are ready)
     import time
-    time.sleep(3)
+    _updater = SkillUpdater()
+    logger.info("Downloading skills from GitHub...")
+    try:
+        _updater.update_all()  # Blocking download — ensures all skills ready before scheduler
+        logger.info("Skills downloaded")
+    except Exception as e:
+        logger.warning("Skill download failed: %s", e)
+    _updater.start()  # Start background polling for future updates
 
     # 4. Start Scheduler
     _scheduler = SkillScheduler(_chrome)
