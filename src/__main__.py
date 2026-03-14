@@ -19,6 +19,13 @@ import sys
 import threading
 import webbrowser
 
+# PyInstaller windowed mode sets sys.stdout/stderr to None.
+# Redirect to devnull so logging and uvicorn don't crash on isatty() calls.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 # Setup logging first
 LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "MemoryTap", "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -27,7 +34,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
-        logging.StreamHandler(),
         logging.FileHandler(
             os.path.join(LOG_DIR, "memory_tap.log"),
             encoding="utf-8",
