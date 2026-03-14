@@ -106,6 +106,36 @@ def _create_tray_icon():
         return None
 
 
+def _register_startup():
+    """Register Memory Tap to auto-start on Windows login.
+
+    If running as exe: registers the exe path.
+    If running as script: registers python -m src command.
+    """
+    import winreg
+
+    try:
+        if getattr(sys, 'frozen', False):
+            # Running as PyInstaller exe
+            exe_path = sys.executable
+            cmd = f'"{exe_path}"'
+        else:
+            # Running as script — register python -m src
+            python_exe = sys.executable
+            cmd = f'"{python_exe}" -m src'
+
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        )
+        winreg.SetValueEx(key, "MemoryTap", 0, winreg.REG_SZ, cmd)
+        winreg.CloseKey(key)
+        logger.info("Registered for Windows startup: %s", cmd)
+    except Exception as e:
+        logger.warning("Failed to register startup: %s", e)
+
+
 def _handle_first_run(chrome: ChromeManager):
     """On first run, open dashboard in the isolated Chrome (for sign-in wizard).
     On subsequent runs, dashboard opens in user's default browser via tray icon.
@@ -115,7 +145,10 @@ def _handle_first_run(chrome: ChromeManager):
     if get_setting("first_run_done") == "yes":
         return
 
-    logger.info("First run detected — opening dashboard in isolated Chrome for sign-in wizard")
+    logger.info("First run detected — registering startup + opening dashboard")
+
+    # Register for auto-start on login
+    _register_startup()
 
     # First run: open dashboard in the ISOLATED Chrome (so user can sign in from there)
     import time
