@@ -1,0 +1,34 @@
+{
+  "manifest_version": 1,
+  "min_app_version": "0.1.0",
+  "repo": "vysakhrnambiar/memory-tap-skills",
+  "skills": [
+    {
+      "name": "youtube_history",
+      "version": "0.1.0",
+      "file": "youtube_history.py",
+      "target_site": "youtube.com",
+      "description": "Collects YouTube watch history — titles, descriptions, top comments",
+      "schedule_hours": 3,
+      "checksum": ""
+    },
+    {
+      "name": "chatgpt_history",
+      "version": "0.1.0",
+      "file": "chatgpt_history.py",
+      "target_site": "chatgpt.com",
+      "description": "Collects ChatGPT conversation history — all messages, thinking blocks, artifacts",
+      "schedule_hours": 3,
+      "checksum": ""
+    },
+    {
+      "name": "gemini_history",
+      "version": "0.1.0",
+      "file": "gemini_history.py",
+      "target_site": "gemini.google.com",
+      "description": "Collects Gemini conversation history — all messages, thinking blocks",
+      "schedule_hours": 3,
+      "checksum": ""
+    }
+  ]
+}
