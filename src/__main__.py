@@ -99,6 +99,27 @@ def _create_tray_icon():
         return None
 
 
+def _handle_first_run(chrome: ChromeManager):
+    """On first run, open Google sign-in in Chrome and dashboard in default browser."""
+    from .db.models import get_setting, set_setting
+
+    if get_setting("first_run_done") == "yes":
+        return
+
+    logger.info("First run detected — opening sign-in flow")
+
+    # Open Google sign-in in the Memory Tap Chrome instance
+    chrome.open_headed("https://accounts.google.com/ServiceLogin")
+
+    # Open dashboard in the user's default browser (not the isolated Chrome)
+    import time
+    time.sleep(2)
+    webbrowser.open(f"http://localhost:{DASHBOARD_PORT}")
+
+    set_setting("first_run_done", "yes")
+    logger.info("First run setup complete — user needs to sign in to Chrome")
+
+
 def _shutdown():
     """Clean shutdown of all components."""
     logger.info("Shutting down...")
@@ -151,6 +172,9 @@ def main():
 
     # 6. Create system tray icon
     tray_icon = _create_tray_icon()
+
+    # 7. First-run: open Chrome to Google sign-in + open dashboard in default browser
+    _handle_first_run(_chrome)
 
     # Handle shutdown signals
     signal.signal(signal.SIGINT, lambda s, f: _shutdown())

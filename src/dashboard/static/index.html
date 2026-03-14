@@ -129,6 +129,16 @@
 
         /* Loading */
         .loading { text-align: center; padding: 40px; color: #666; }
+
+        /* Sign-in banner */
+        .signin-banner {
+            background: linear-gradient(135deg, #7c3aed22, #4f46e522);
+            border: 1px solid #7c3aed44; border-radius: 12px;
+            padding: 24px 32px; margin-bottom: 24px; text-align: center;
+        }
+        .signin-banner h2 { font-size: 20px; margin-bottom: 8px; color: #e0e0e0; }
+        .signin-banner p { color: #999; font-size: 14px; margin-bottom: 16px; }
+        .signin-banner .btn { font-size: 15px; padding: 10px 24px; }
     </style>
 </head>
 <body>
@@ -143,6 +153,14 @@
             <button class="tab" data-tab="sources">Sources</button>
             <button class="tab" data-tab="search">Search</button>
             <button class="tab" data-tab="settings">Settings</button>
+        </div>
+
+        <!-- Sign-in banner (shown when no sources are logged in) -->
+        <div id="signin-banner" class="signin-banner" style="display:none">
+            <h2>Welcome to Memory Tap</h2>
+            <p>Sign into your Google account in the Memory Tap browser window to get started.<br>
+            This is a separate Chrome instance — it won't affect your main browser.</p>
+            <button class="btn primary" onclick="openGoogleSignIn()">Open Sign-In Page</button>
         </div>
 
         <!-- Timeline Panel -->
@@ -200,6 +218,30 @@
         loadTimeline();
         loadSources();
         loadSettings();
+        checkSignInStatus();
+
+        async function checkSignInStatus() {
+            try {
+                const resp = await fetch('/api/sources');
+                const sources = await resp.json();
+                const anyLoggedIn = sources.some(s => s.login_status === 'logged_in');
+                document.getElementById('signin-banner').style.display = anyLoggedIn ? 'none' : 'block';
+            } catch(e) {}
+        }
+
+        async function openGoogleSignIn() {
+            // Try to open sign-in via any source that has a login URL
+            try {
+                const resp = await fetch('/api/sources');
+                const sources = await resp.json();
+                if (sources.length > 0) {
+                    await fetch(`/api/sources/${sources[0].name}/login`, { method: 'POST' });
+                    alert('A Chrome window has opened. Please sign into your Google account there.\n\nOnce signed in, come back here and click "Run Now" on any source to start collecting.');
+                    // Refresh after a delay
+                    setTimeout(() => { checkSignInStatus(); loadSources(); }, 5000);
+                }
+            } catch(e) { alert('Failed to open sign-in: ' + e); }
+        }
 
         async function loadStats() {
             try {

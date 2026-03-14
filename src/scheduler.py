@@ -83,7 +83,7 @@ class SkillScheduler:
         """Check if a skill is due to run based on its schedule."""
         conn = get_connection(self.db_path)
         row = conn.execute(
-            "SELECT enabled, last_sync_at, schedule_hours FROM sources WHERE name = ?",
+            "SELECT enabled, last_sync_at, schedule_hours, login_status FROM sources WHERE name = ?",
             (skill_name,),
         ).fetchone()
         conn.close()
@@ -92,7 +92,10 @@ class SkillScheduler:
             return False
 
         if not row["last_sync_at"]:
-            return True  # never run before
+            # Never run before — only auto-run if user has logged in at least once
+            if row["login_status"] != "logged_in":
+                return False  # Wait for user to sign in via dashboard first
+            return True
 
         last_sync = datetime.fromisoformat(row["last_sync_at"])
         next_run = last_sync + timedelta(hours=row["schedule_hours"])
