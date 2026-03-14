@@ -271,50 +271,41 @@ def _shutdown():
 
 
 def _show_splash():
-    """Show a brief 'Setting up...' tooltip notification via tray-style balloon.
+    """Show a brief 'Setting up...' notification while app starts.
 
-    Uses a temporary Win32 window to show a toast notification that auto-disappears.
-    No OK button, no user interaction needed.
+    Uses Windows toast notification via PowerShell.
+    Auto-disappears, no buttons, no user interaction needed.
     """
     try:
-        import ctypes
-        import ctypes.wintypes
-
-        # Use a simple approach: create a window, show balloon tip, destroy
-        # Simpler: just use the title bar trick — a tiny topmost window
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-
-        # Register window class
-        wc_name = "MemoryTapSplash"
-        wc = ctypes.wintypes.WNDCLASS()
-        wc.lpfnWndProc = ctypes.cast(user32.DefWindowProcW, ctypes.c_void_p)
-        wc.hInstance = kernel32.GetModuleHandleW(None)
-        wc.lpszClassName = wc_name
-
+        import subprocess as _sp
+        # Use PowerShell to show a Windows toast notification
+        ps_cmd = """
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+        $template = '<toast><visual><binding template="ToastText02"><text id="1">Memory Tap</text><text id="2">Setting up database, downloading skills, launching Chrome...</text></binding></visual></toast>'
+        $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+        $xml.LoadXml($template)
+        $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Memory Tap').Show($toast)
+        """
+        _sp.Popen(
+            ["powershell", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+            creationflags=_sp.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        # Fallback: simple MessageBox with auto-close
         try:
-            user32.RegisterClassW(ctypes.byref(wc))
+            import ctypes
+            ctypes.windll.user32.MessageBoxTimeoutW(
+                0,
+                "Setting up database, downloading skills, launching Chrome...",
+                "Memory Tap — Starting",
+                0x00040040,  # MB_ICONINFORMATION | MB_TOPMOST
+                0, 5000,  # auto-close 5 seconds
+            )
         except Exception:
             pass
-
-        # Create a small topmost window with just a title
-        hwnd = user32.CreateWindowExW(
-            0x00000008,  # WS_EX_TOPMOST
-            wc_name,
-            "Memory Tap — Setting up...",
-            0x00C00000 | 0x00080000,  # WS_CAPTION | WS_SYSMENU
-            500, 400, 350, 80,  # x, y, w, h
-            0, 0, wc.hInstance, 0,
-        )
-        user32.ShowWindow(hwnd, 5)  # SW_SHOW
-        user32.UpdateWindow(hwnd)
-
-        # Auto-close after 8 seconds
-        import time
-        time.sleep(8)
-        user32.DestroyWindow(hwnd)
-    except Exception:
-        pass
 
 
 def main():
