@@ -270,8 +270,37 @@ def _shutdown():
     os._exit(0)
 
 
+def _show_splash():
+    """Show a brief 'Setting up...' notification while app starts.
+
+    Uses a small always-on-top window that auto-closes after setup.
+    Runs in a background thread so it doesn't block startup.
+    """
+    try:
+        import ctypes
+        # Show a non-blocking topmost message
+        # MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
+        # But MessageBox is blocking... use a different approach
+        # Create a simple Win32 window with just text
+        ctypes.windll.user32.MessageBoxTimeoutW(
+            0,
+            "Memory Tap is starting up...\n\n"
+            "Setting up database, downloading skills, launching Chrome.\n"
+            "This window will close automatically.",
+            "Memory Tap",
+            0x00040040,  # MB_ICONINFORMATION | MB_TOPMOST
+            0,  # language
+            8000,  # timeout 8 seconds (auto-close)
+        )
+    except Exception:
+        pass  # MessageBoxTimeoutW may not exist on all Windows versions
+
+
 def main():
     global _chrome, _scheduler, _updater
+
+    # Show splash immediately so user knows something is happening
+    threading.Thread(target=_show_splash, daemon=True).start()
 
     logger.info("=" * 50)
     logger.info("Memory Tap starting...")

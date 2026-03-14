@@ -318,20 +318,53 @@ class ChromeManager:
         return False
 
     def open_headed(self, url: str):
-        """Open a URL in the Chrome instance (makes window visible for user login)."""
-        # Chrome may require PUT or GET depending on version — try both
+        """Open a URL in the Chrome instance (makes window visible for user login).
+
+        Creates a blank tab first, then navigates it via CDP WebSocket.
+        Chrome's /json/new?url= often ignores the URL parameter.
+        """
+        import websocket as _ws
+
+        # Step 1: Create blank tab
+        tab_info = None
         for method in [requests.put, requests.get]:
             try:
-                resp = method(
-                    f"{self.cdp_base_url}/json/new?url={url}", timeout=5
-                )
+                resp = method(f"{self.cdp_base_url}/json/new", timeout=5)
                 if resp.status_code == 200:
-                    logger.info("Opened %s in Chrome for user interaction", url)
-                    return resp.json()
+                    tab_info = resp.json()
+                    break
             except Exception:
                 continue
-        logger.error("Failed to open URL in Chrome: %s", url)
-        return None
+
+        if not tab_info:
+            logger.error("Failed to create tab for URL: %s", url)
+            return None
+
+        # Step 2: Navigate via CDP WebSocket
+        try:
+            ws_url = tab_info.get("webSocketDebuggerUrl", "")
+            if ws_url:
+                ws = _ws.create_connection(ws_url, timeout=10)
+                import json as _json
+                ws.send(_json.dumps({
+                    "id": 1,
+                    "method": "Page.navigate",
+                    "params": {"url": url},
+                }))
+                # Wait for response
+                ws.settimeout(5)
+                try:
+                    ws.recv()
+                except Exception:
+                    pass
+                ws.close()
+                logger.info("Opened %s in Chrome for user interaction", url)
+            else:
+                logger.warning("No WebSocket URL for new tab — URL may not load")
+        except Exception as e:
+            logger.warning("CDP navigate failed for %s: %s", url, e)
+
+        return tab_info
 
     def get_tabs(self) -> list[dict]:
         """Get list of all open tabs."""
