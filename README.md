@@ -1,68 +1,123 @@
-# Memory Tap Skills
+# Memory Tap
 
-Official skill repository for [Memory Tap](https://github.com/vysakhrnambiar/memory-tap) — the personal knowledge collector.
+> Personal knowledge collector. Runs in the background, collects your ChatGPT, Gemini, and YouTube history into a local searchable database. Chat with your data using LLM-powered RAG.
 
-## What Are Skills?
+## What It Does
 
-Skills are Python scripts that navigate websites using Chrome DevTools Protocol (CDP) and collect your data into a local SQLite database. They run in the background without needing any API keys or LLM — pure navigation scripts that behave like a human browsing.
+1. Launches an isolated Chrome instance (separate from your main browser)
+2. You sign into your Google account once
+3. Skills navigate like a human — slow scrolling, mouse movements, realistic pauses
+4. Everything is stored locally in SQLite with full-text search
+5. Ask questions about your collected data using Gemini 2.5 Flash via OpenRouter
+
+## Install
+
+```powershell
+git clone https://github.com/vysakhrnambiar/memory-tap-skills.git
+cd memory-tap-skills
+python install.py
+```
+
+The installer will:
+- Install Python dependencies
+- Create the local database
+- Download the latest skills
+- Register Memory Tap to start on Windows login
+- Create a desktop shortcut
+- Offer to launch immediately
+
+## Quick Start (after install)
+
+```powershell
+python -m src
+# Or double-click: start.bat
+# Dashboard: http://localhost:7777
+```
 
 ## Available Skills
 
-| Skill | Version | Site | What It Collects |
-|-------|---------|------|-----------------|
-| `youtube_history` | 0.1.0 | youtube.com | Watch history, video descriptions, top comments |
-| `chatgpt_history` | 0.1.0 | chatgpt.com | All conversations, messages, thinking blocks, artifact downloads |
-| `gemini_history` | 0.1.0 | gemini.google.com | All conversations, messages, thinking blocks |
+| Skill | Site | What It Collects |
+|-------|------|-----------------|
+| `youtube_history` | youtube.com | Watch history, video descriptions, top comments |
+| `chatgpt_history` | chatgpt.com | Conversations, messages, thinking blocks, artifact downloads |
+| `gemini_history` | gemini.google.com | Conversations, messages, thinking blocks |
+
+Skills auto-update from this repository every 6 hours.
+
+## Architecture
+
+```
+[Tray App]
+    |-- [Scheduler] -----> runs skills every N hours
+    |-- [Chrome Manager] -> isolated Chrome profile, CDP connection
+    |-- [Skill Engine] --> loads skills, executes with human-like CDP
+    |-- [Data Store] ----> SQLite + FTS5 full-text search
+    |-- [Dashboard] -----> FastAPI + static HTML (localhost:7777)
+    |-- [RAG Chat] ------> FTS5 search + LLM via OpenRouter
+    |-- [Skill Updater] -> polls this GitHub repo, auto-updates skills
+```
+
+## Dashboard
+
+- **Timeline**: See what was collected, organized by day
+- **Sources**: Enable/disable skills, trigger manual runs, sign in
+- **Search**: Full-text search across all collected data
+- **Settings**: Configure LLM provider and API key
+
+## Project Structure
+
+```
+memory-tap-skills/
+    install.py               -- One-step installer
+    pyproject.toml            -- Package definition
+    requirements.txt          -- Python dependencies
+    manifest.json             -- Skill registry (auto-update source)
+    skills/                   -- Collection skills (pure CDP navigation)
+        youtube_history.py
+        chatgpt_history.py
+        gemini_history.py
+    src/                      -- Core application
+        __main__.py           -- Entry point
+        chrome_manager.py     -- Isolated Chrome lifecycle
+        cdp_client.py         -- Chrome DevTools Protocol client
+        human.py              -- Human-like interaction (Bezier mouse, scroll)
+        scheduler.py          -- Periodic skill execution
+        db/
+            models.py         -- SQLite schema + FTS5
+            sync_tracker.py   -- Incremental sync logic
+        skills/
+            base.py           -- Skill interface
+        dashboard/
+            app.py            -- FastAPI dashboard
+            static/
+                index.html    -- Dark theme UI
+        rag/
+            search.py         -- Full-text search
+            chat.py           -- LLM chat via OpenRouter
+        updater/
+            skill_updater.py  -- GitHub auto-update
+```
+
+## Requirements
+
+- Windows 10/11
+- Python 3.10+
+- Google Chrome installed
+- OpenRouter API key (only for RAG chat — collection works without it)
 
 ## How Skills Work
 
-1. Memory Tap launches an isolated Chrome instance with your Google account
-2. Skills navigate to their target site using CDP
-3. They scroll slowly, click naturally, and read page content — mimicking human behavior
-4. Collected data is stored in your local SQLite database
-5. Skills run on a schedule (default: every 3 hours)
+Skills are pure Python scripts that navigate websites using Chrome DevTools Protocol (CDP). No APIs, no LLM needed for collection — just human-like browser automation.
 
-## Auto-Updates
-
-Memory Tap automatically checks this repository for skill updates every 6 hours. When a skill is updated (e.g., because a website changed its layout), your local copy is automatically replaced.
-
-## Skill Interface
-
-Every skill implements this interface:
-
-```python
-from memory_tap.skills.base import BaseSkill, SkillManifest, CollectResult
-
-class MySkill(BaseSkill):
-    @property
-    def manifest(self) -> SkillManifest:
-        return SkillManifest(
-            name="my_skill",
-            version="1.0.0",
-            target_url="https://example.com",
-            description="What this skill collects",
-        )
-
-    def check_login(self, tab) -> bool:
-        """Return True if user is logged in."""
-        ...
-
-    def collect(self, tab, tracker) -> CollectResult:
-        """Navigate and collect data."""
-        ...
-```
-
-## manifest.json
-
-The `manifest.json` file in this repo is the source of truth. Memory Tap reads it to discover available skills, check versions, and verify checksums.
+When a website changes its layout, we update the skill here and your local copy auto-updates within 6 hours.
 
 ## Security
 
-- Skills only run from THIS repository (hardcoded in Memory Tap)
-- Each skill file has a SHA-256 checksum in the manifest
-- Skills execute in the same Chrome instance as the user's session — they can only access what the user can access
-- No data leaves your machine — everything stays in local SQLite
+- All data stays on your machine (local SQLite)
+- Skills only download from this repository
+- Chrome runs with an isolated profile (never touches your main browser)
+- No telemetry, no tracking
 
-## Contributing
+## License
 
-This is a managed repository. If you'd like a new skill added, open an issue describing the website and what data to collect.
+MIT

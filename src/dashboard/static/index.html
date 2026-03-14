@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory Tap</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f; color: #e0e0e0; line-height: 1.6;
+        }
+        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+
+        /* Header */
+        header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 20px 0; border-bottom: 1px solid #2a2a2a; margin-bottom: 30px;
+        }
+        header h1 { font-size: 24px; font-weight: 600; }
+        header h1 span { color: #7c3aed; }
+
+        /* Nav tabs */
+        .tabs {
+            display: flex; gap: 4px; margin-bottom: 30px;
+            border-bottom: 1px solid #2a2a2a; padding-bottom: 0;
+        }
+        .tab {
+            padding: 10px 20px; cursor: pointer; border: none; background: none;
+            color: #888; font-size: 14px; border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab:hover { color: #ccc; }
+        .tab.active { color: #7c3aed; border-bottom-color: #7c3aed; }
+
+        /* Panels */
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        /* Stats bar */
+        .stats-bar {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
+            padding: 16px; text-align: center;
+        }
+        .stat-card .number { font-size: 28px; font-weight: 700; color: #7c3aed; }
+        .stat-card .label { font-size: 12px; color: #888; text-transform: uppercase; }
+
+        /* Timeline */
+        .timeline-day {
+            margin-bottom: 24px; border-left: 2px solid #2a2a2a; padding-left: 20px;
+        }
+        .timeline-date {
+            font-size: 14px; font-weight: 600; color: #7c3aed; margin-bottom: 12px;
+            position: relative;
+        }
+        .timeline-date::before {
+            content: ''; position: absolute; left: -25px; top: 4px;
+            width: 10px; height: 10px; border-radius: 50%;
+            background: #7c3aed; border: 2px solid #0f0f0f;
+        }
+        .timeline-item {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
+            padding: 12px 16px; margin-bottom: 8px;
+        }
+        .timeline-item .source-badge {
+            display: inline-block; padding: 2px 8px; border-radius: 4px;
+            font-size: 11px; font-weight: 600; margin-right: 8px;
+        }
+        .badge-chatgpt { background: #10a37f22; color: #10a37f; }
+        .badge-gemini { background: #4285f422; color: #4285f4; }
+        .badge-youtube { background: #ff000022; color: #ff4444; }
+        .badge-sync { background: #7c3aed22; color: #7c3aed; }
+        .timeline-item .title { font-weight: 500; }
+        .timeline-item .meta { font-size: 12px; color: #666; margin-top: 4px; }
+
+        /* Sources */
+        .source-card {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
+            padding: 16px; margin-bottom: 12px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .source-info h3 { font-size: 16px; }
+        .source-info .status { font-size: 12px; margin-top: 4px; }
+        .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .status-dot.green { background: #22c55e; }
+        .status-dot.red { background: #ef4444; }
+        .status-dot.yellow { background: #eab308; }
+        .source-actions { display: flex; gap: 8px; }
+
+        /* Buttons */
+        .btn {
+            padding: 6px 14px; border: 1px solid #333; border-radius: 6px;
+            background: #1a1a1a; color: #e0e0e0; cursor: pointer; font-size: 13px;
+            transition: all 0.2s;
+        }
+        .btn:hover { background: #2a2a2a; }
+        .btn.primary { background: #7c3aed; border-color: #7c3aed; color: white; }
+        .btn.primary:hover { background: #6d28d9; }
+        .btn.danger { border-color: #ef4444; color: #ef4444; }
+
+        /* Settings */
+        .setting-row {
+            display: flex; align-items: center; gap: 16px;
+            padding: 12px 0; border-bottom: 1px solid #1a1a1a;
+        }
+        .setting-row label { width: 150px; font-size: 14px; color: #888; }
+        .setting-row input, .setting-row select {
+            flex: 1; padding: 8px 12px; background: #1a1a1a; border: 1px solid #333;
+            border-radius: 6px; color: #e0e0e0; font-size: 14px;
+        }
+
+        /* Search */
+        .search-bar {
+            display: flex; gap: 8px; margin-bottom: 20px;
+        }
+        .search-bar input {
+            flex: 1; padding: 10px 16px; background: #1a1a1a; border: 1px solid #333;
+            border-radius: 8px; color: #e0e0e0; font-size: 14px;
+        }
+        .search-result {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
+            padding: 12px 16px; margin-bottom: 8px;
+        }
+        .search-result .snippet { color: #aaa; font-size: 13px; margin-top: 4px; }
+
+        /* Loading */
+        .loading { text-align: center; padding: 40px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><span>Memory</span> Tap</h1>
+            <span id="status-text" style="font-size:12px;color:#666">Starting...</span>
+        </header>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="timeline">Timeline</button>
+            <button class="tab" data-tab="sources">Sources</button>
+            <button class="tab" data-tab="search">Search</button>
+            <button class="tab" data-tab="settings">Settings</button>
+        </div>
+
+        <!-- Timeline Panel -->
+        <div id="timeline" class="panel active">
+            <div class="stats-bar" id="stats-bar"></div>
+            <div id="timeline-content"><div class="loading">Loading timeline...</div></div>
+        </div>
+
+        <!-- Sources Panel -->
+        <div id="sources" class="panel">
+            <div id="sources-list"><div class="loading">Loading sources...</div></div>
+        </div>
+
+        <!-- Search Panel -->
+        <div id="search" class="panel">
+            <div class="search-bar">
+                <input type="text" id="search-input" placeholder="Search your collected data..." />
+                <button class="btn primary" onclick="doSearch()">Search</button>
+            </div>
+            <div id="search-results"></div>
+        </div>
+
+        <!-- Settings Panel -->
+        <div id="settings" class="panel">
+            <h2 style="margin-bottom:20px;font-size:18px">Settings</h2>
+            <div class="setting-row">
+                <label>LLM Provider</label>
+                <select id="llm-provider">
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash (OpenRouter)</option>
+                </select>
+            </div>
+            <div class="setting-row">
+                <label>OpenRouter Key</label>
+                <input type="password" id="api-key" placeholder="sk-or-..." />
+            </div>
+            <div style="margin-top:16px">
+                <button class="btn primary" onclick="saveSettings()">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        // Load data on start
+        loadStats();
+        loadTimeline();
+        loadSources();
+        loadSettings();
+
+        async function loadStats() {
+            try {
+                const resp = await fetch('/api/stats');
+                const data = await resp.json();
+                document.getElementById('stats-bar').innerHTML = `
+                    <div class="stat-card"><div class="number">${data.total_conversations}</div><div class="label">Conversations</div></div>
+                    <div class="stat-card"><div class="number">${data.total_messages}</div><div class="label">Messages</div></div>
+                    <div class="stat-card"><div class="number">${data.total_videos}</div><div class="label">Videos</div></div>
+                    <div class="stat-card"><div class="number">${data.total_artifacts}</div><div class="label">Artifacts</div></div>
+                `;
+                document.getElementById('status-text').textContent = `${data.sources.length} sources active`;
+                document.getElementById('status-text').style.color = '#22c55e';
+            } catch(e) {
+                document.getElementById('status-text').textContent = 'Error loading stats';
+                document.getElementById('status-text').style.color = '#ef4444';
+            }
+        }
+
+        async function loadTimeline() {
+            try {
+                const resp = await fetch('/api/timeline?days=14');
+                const days = await resp.json();
+                if (days.length === 0) {
+                    document.getElementById('timeline-content').innerHTML =
+                        '<div class="loading">No data collected yet. Enable some sources to get started!</div>';
+                    return;
+                }
+                let html = '';
+                for (const day of days) {
+                    html += `<div class="timeline-day"><div class="timeline-date">${formatDate(day.date)}</div>`;
+                    for (const c of day.conversations) {
+                        const badge = c.source.includes('chatgpt') ? 'chatgpt' :
+                                     c.source.includes('gemini') ? 'gemini' : 'sync';
+                        html += `<div class="timeline-item">
+                            <span class="source-badge badge-${badge}">${c.source}</span>
+                            <span class="title">${esc(c.title)}</span>
+                            <div class="meta">${c.message_count} messages</div>
+                        </div>`;
+                    }
+                    for (const v of day.videos) {
+                        html += `<div class="timeline-item">
+                            <span class="source-badge badge-youtube">YouTube</span>
+                            <span class="title">${esc(v.title)}</span>
+                            <div class="meta">${esc(v.channel || '')} ${v.watched_at ? '&middot; ' + v.watched_at : ''}</div>
+                        </div>`;
+                    }
+                    if (day.sync_runs.length > 0 && day.conversations.length === 0 && day.videos.length === 0) {
+                        for (const s of day.sync_runs) {
+                            html += `<div class="timeline-item">
+                                <span class="source-badge badge-sync">sync</span>
+                                <span class="title">${s.source}: ${s.status}</span>
+                                <div class="meta">${s.items_found} found, ${s.items_new} new${s.error ? ' &middot; Error: ' + esc(s.error) : ''}</div>
+                            </div>`;
+                        }
+                    }
+                    html += '</div>';
+                }
+                document.getElementById('timeline-content').innerHTML = html;
+            } catch(e) {
+                document.getElementById('timeline-content').innerHTML =
+                    '<div class="loading">Failed to load timeline</div>';
+            }
+        }
+
+        async function loadSources() {
+            try {
+                const resp = await fetch('/api/sources');
+                const sources = await resp.json();
+                if (sources.length === 0) {
+                    document.getElementById('sources-list').innerHTML =
+                        '<div class="loading">No skills installed yet. Skills will auto-download from GitHub.</div>';
+                    return;
+                }
+                let html = '';
+                for (const s of sources) {
+                    const statusColor = s.login_status === 'logged_in' ? 'green' :
+                                       s.login_status === 'not_logged_in' ? 'red' : 'yellow';
+                    const lastSync = s.last_sync_at ? timeAgo(s.last_sync_at) : 'Never';
+                    html += `<div class="source-card">
+                        <div class="source-info">
+                            <h3>${esc(s.name)}</h3>
+                            <div class="status">
+                                <span class="status-dot ${statusColor}"></span>
+                                ${s.login_status} &middot; Last sync: ${lastSync}
+                                ${s.last_error ? '<br><span style="color:#ef4444">Error: ' + esc(s.last_error) + '</span>' : ''}
+                            </div>
+                        </div>
+                        <div class="source-actions">
+                            <button class="btn" onclick="toggleSource('${s.name}')">${s.enabled ? 'Disable' : 'Enable'}</button>
+                            <button class="btn" onclick="loginSource('${s.name}')">Login</button>
+                            <button class="btn primary" onclick="runSource('${s.name}')">Run Now</button>
+                        </div>
+                    </div>`;
+                }
+                document.getElementById('sources-list').innerHTML = html;
+            } catch(e) {
+                document.getElementById('sources-list').innerHTML =
+                    '<div class="loading">Failed to load sources</div>';
+            }
+        }
+
+        async function loadSettings() {
+            try {
+                const resp = await fetch('/api/settings');
+                const data = await resp.json();
+                if (data.llm_provider) document.getElementById('llm-provider').value = data.llm_provider;
+                if (data.api_key_masked) document.getElementById('api-key').placeholder = data.api_key_masked;
+            } catch(e) {}
+        }
+
+        async function saveSettings() {
+            const provider = document.getElementById('llm-provider').value;
+            const key = document.getElementById('api-key').value;
+            const body = { llm_provider: provider };
+            if (key) body.api_key = key;
+            await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+            alert('Settings saved');
+            loadSettings();
+        }
+
+        async function toggleSource(name) {
+            await fetch(`/api/sources/${name}/toggle`, { method: 'POST' });
+            loadSources();
+        }
+
+        async function loginSource(name) {
+            const resp = await fetch(`/api/sources/${name}/login`, { method: 'POST' });
+            const data = await resp.json();
+            if (data.url) alert('Chrome opened for login. Please sign in and close the tab when done.');
+        }
+
+        async function runSource(name) {
+            const btn = event.target;
+            btn.textContent = 'Running...';
+            btn.disabled = true;
+            try {
+                const resp = await fetch(`/api/sources/${name}/run`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.error) alert('Error: ' + data.error);
+                else alert(`Done! Found ${data.items_found} items (${data.items_new} new)`);
+            } finally {
+                btn.textContent = 'Run Now';
+                btn.disabled = false;
+                loadSources();
+                loadTimeline();
+                loadStats();
+            }
+        }
+
+        async function doSearch() {
+            const q = document.getElementById('search-input').value.trim();
+            if (!q) return;
+            const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+            const results = await resp.json();
+            if (results.length === 0) {
+                document.getElementById('search-results').innerHTML = '<div class="loading">No results found</div>';
+                return;
+            }
+            let html = '';
+            for (const r of results) {
+                if (r.type === 'message') {
+                    const badge = r.source.includes('chatgpt') ? 'chatgpt' : r.source.includes('gemini') ? 'gemini' : 'sync';
+                    html += `<div class="search-result">
+                        <span class="source-badge badge-${badge}">${r.source}</span>
+                        <strong>${esc(r.conversation_title)}</strong> (${r.role})
+                        <div class="snippet">${esc(r.content)}</div>
+                    </div>`;
+                } else {
+                    html += `<div class="search-result">
+                        <span class="source-badge badge-youtube">YouTube</span>
+                        <strong>${esc(r.title)}</strong> &middot; ${esc(r.channel || '')}
+                        <div class="snippet">${esc(r.description || '')}</div>
+                    </div>`;
+                }
+            }
+            document.getElementById('search-results').innerHTML = html;
+        }
+
+        document.getElementById('search-input').addEventListener('keydown', e => {
+            if (e.key === 'Enter') doSearch();
+        });
+
+        function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+        function formatDate(d) {
+            const today = new Date().toISOString().slice(0,10);
+            const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
+            if (d === today) return 'Today';
+            if (d === yesterday) return 'Yesterday';
+            return new Date(d + 'T00:00:00').toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'});
+        }
+        function timeAgo(iso) {
+            const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+            if (diff < 60) return 'just now';
+            if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+            return Math.floor(diff/86400) + 'd ago';
+        }
+    </script>
+</body>
+</html>
