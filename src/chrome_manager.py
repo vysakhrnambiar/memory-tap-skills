@@ -196,6 +196,18 @@ def _clear_pid():
         pass
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """Check if a process is running by PID. Windows-compatible."""
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return str(pid) in result.stdout
+    except Exception:
+        return False
+
+
 class ChromeManager:
     """Manages the lifecycle of Memory Tap's isolated Chrome instance.
 
@@ -348,11 +360,9 @@ class ChromeManager:
 
     def is_running(self) -> bool:
         """Check if our Chrome is still running."""
-        # Check PID is alive
+        # Check PID is alive (Windows-compatible)
         if self._pid:
-            try:
-                os.kill(self._pid, 0)  # signal 0 = check if process exists
-            except OSError:
+            if not _is_pid_alive(self._pid):
                 logger.warning("Chrome PID %d is dead", self._pid)
                 return False
 
@@ -411,11 +421,7 @@ class HealthMonitor:
         # 1. PID alive?
         pid = self.chrome._pid or _read_pid()
         if pid:
-            try:
-                os.kill(pid, 0)
-                status["pid_alive"] = True
-            except OSError:
-                pass
+            status["pid_alive"] = _is_pid_alive(pid)
 
         # 2. CDP responds?
         try:

@@ -310,8 +310,24 @@ def main():
     # 6. Create system tray icon
     tray_icon = _create_tray_icon()
 
-    # 7. First-run: open Chrome to Google sign-in + open dashboard in default browser
-    _handle_first_run(_chrome)
+    # 7. First-run: open dashboard in Chrome AFTER uvicorn starts
+    # Must run in a thread because uvicorn.run() blocks
+    def _delayed_first_run():
+        """Wait for dashboard to be ready, then open it in Chrome."""
+        import time
+        import requests as _req
+        # Wait for uvicorn to start
+        for _ in range(30):
+            try:
+                r = _req.get(f"http://localhost:{DASHBOARD_PORT}/api/stats", timeout=2)
+                if r.status_code == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        _handle_first_run(_chrome)
+
+    threading.Thread(target=_delayed_first_run, daemon=True).start()
 
     # Handle shutdown signals
     signal.signal(signal.SIGINT, lambda s, f: _shutdown())
