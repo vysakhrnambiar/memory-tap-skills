@@ -197,11 +197,15 @@ def _clear_pid():
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """Check if a process is running by PID. Windows-compatible."""
+    """Check if a process is running by PID. Windows-compatible.
+
+    Uses CREATE_NO_WINDOW to prevent console flash in windowed/PyInstaller mode.
+    """
     try:
         result = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
             capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return str(pid) in result.stdout
     except Exception:
@@ -279,10 +283,13 @@ class ChromeManager:
         logger.info("Launching Chrome on port %d: %s", port, self.chrome_path)
         logger.info("Profile: %s", PROFILE_DIR)
 
+        # DETACHED_PROCESS prevents inheriting parent's (hidden) console
+        # but still allows Chrome to create its own visible window
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=subprocess.DETACHED_PROCESS,
         )
         self._pid = self.process.pid
         _write_pid(self._pid)
