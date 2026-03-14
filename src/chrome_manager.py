@@ -312,15 +312,18 @@ class ChromeManager:
 
     def open_headed(self, url: str):
         """Open a URL in the Chrome instance (makes window visible for user login)."""
-        try:
-            resp = requests.get(
-                f"{self.cdp_base_url}/json/new?url={url}", timeout=5
-            )
-            if resp.status_code == 200:
-                logger.info("Opened %s in Chrome for user interaction", url)
-                return resp.json()
-        except Exception as e:
-            logger.error("Failed to open URL: %s", e)
+        # Chrome may require PUT or GET depending on version — try both
+        for method in [requests.put, requests.get]:
+            try:
+                resp = method(
+                    f"{self.cdp_base_url}/json/new?url={url}", timeout=5
+                )
+                if resp.status_code == 200:
+                    logger.info("Opened %s in Chrome for user interaction", url)
+                    return resp.json()
+            except Exception:
+                continue
+        logger.error("Failed to open URL in Chrome: %s", url)
         return None
 
     def get_tabs(self) -> list[dict]:
