@@ -320,38 +320,51 @@ class ChromeManager:
     def open_headed(self, url: str):
         """Open a URL in the Chrome instance (makes window visible for user login).
 
-        Creates a blank tab first, then navigates it via CDP WebSocket.
-        Chrome's /json/new?url= often ignores the URL parameter.
+        Tries to reuse an existing about:blank tab first to avoid extra tabs.
+        If no blank tab exists, creates a new one.
+        Then navigates via CDP WebSocket (Chrome's /json/new?url= ignores the URL).
         """
         import websocket as _ws
+        import json as _json
 
-        # Step 1: Create blank tab
+        # Step 1: Try to reuse an existing about:blank tab
         tab_info = None
-        for method in [requests.put, requests.get]:
-            try:
-                resp = method(f"{self.cdp_base_url}/json/new", timeout=5)
-                if resp.status_code == 200:
-                    tab_info = resp.json()
+        try:
+            resp = requests.get(f"{self.cdp_base_url}/json", timeout=5)
+            tabs = [t for t in resp.json() if t.get("type") == "page"]
+            for t in tabs:
+                if t.get("url") in ("about:blank", "chrome://newtab/", ""):
+                    tab_info = t
+                    logger.info("Reusing existing blank tab %s", t["id"][:8])
                     break
-            except Exception:
-                continue
+        except Exception:
+            pass
+
+        # Step 2: If no blank tab, create one
+        if not tab_info:
+            for method in [requests.put, requests.get]:
+                try:
+                    resp = method(f"{self.cdp_base_url}/json/new", timeout=5)
+                    if resp.status_code == 200:
+                        tab_info = resp.json()
+                        break
+                except Exception:
+                    continue
 
         if not tab_info:
-            logger.error("Failed to create tab for URL: %s", url)
+            logger.error("Failed to get/create tab for URL: %s", url)
             return None
 
-        # Step 2: Navigate via CDP WebSocket
+        # Step 3: Navigate via CDP WebSocket
         try:
             ws_url = tab_info.get("webSocketDebuggerUrl", "")
             if ws_url:
                 ws = _ws.create_connection(ws_url, timeout=10)
-                import json as _json
                 ws.send(_json.dumps({
                     "id": 1,
                     "method": "Page.navigate",
                     "params": {"url": url},
                 }))
-                # Wait for response
                 ws.settimeout(5)
                 try:
                     ws.recv()
@@ -360,7 +373,7 @@ class ChromeManager:
                 ws.close()
                 logger.info("Opened %s in Chrome for user interaction", url)
             else:
-                logger.warning("No WebSocket URL for new tab — URL may not load")
+                logger.warning("No WebSocket URL for tab — URL may not load")
         except Exception as e:
             logger.warning("CDP navigate failed for %s: %s", url, e)
 
