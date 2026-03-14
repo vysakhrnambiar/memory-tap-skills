@@ -137,6 +137,7 @@ class ChromeManager:
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
+            "--remote-allow-origins=*",
             # Start with a blank page — skills will navigate
             "about:blank",
         ]
