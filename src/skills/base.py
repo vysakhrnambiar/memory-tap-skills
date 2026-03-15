@@ -19,6 +19,7 @@ from ..cdp_client import CDPTab, CDPClient
 from ..db.core_db import add_alert, add_notification, get_core_connection, CORE_DB_PATH
 from ..db.skill_db import SkillDBManager
 from ..db.sync_tracker import SyncTracker
+from .ui_manifest import WidgetDefinition, PageSection, NotificationRule
 
 logger = logging.getLogger("memory_tap.skill")
 
@@ -200,6 +201,38 @@ class BaseSkill(ABC):
         conn is a sqlite3.Connection to this skill's DB.
         """
         ...
+
+    @abstractmethod
+    def get_widgets(self) -> list[WidgetDefinition]:
+        """Define widgets for the dashboard home screen.
+
+        Return a list of WidgetDefinition objects.
+        """
+        ...
+
+    @abstractmethod
+    def get_page_sections(self) -> list[PageSection]:
+        """Define sections for this skill's full page.
+
+        Return a list of PageSection objects.
+        """
+        ...
+
+    @abstractmethod
+    def get_notification_rules(self) -> list[NotificationRule]:
+        """Define when to push notifications.
+
+        Return a list of NotificationRule objects.
+        """
+        ...
+
+    def get_stats(self, conn) -> list[dict]:
+        """Return stat cards data. Override if using stat_cards display type.
+
+        Default: returns empty list. Skills with stat_cards widgets must override.
+        Each item: {"label": "Videos", "value": 142}
+        """
+        return []
 
     @abstractmethod
     def collect(self, tab: CDPTab, tracker: SyncTracker,
@@ -422,13 +455,8 @@ class BaseSkill(ABC):
                     result.details["github_issue_url"] = github_url
                     result.details["screenshot"] = screenshot_path
 
-            # Notify on successful collection
-            if result.items_new > 0:
-                tracker.notify(
-                    f"Collected {result.items_new} new items",
-                    f"{m.name}: {result.items_found} found, {result.items_new} new",
-                    link_to=f"/skill/{m.name}",
-                )
+            # Evaluate notification rules
+            self._evaluate_notifications("after_collection", result, tracker, limits)
 
             return result
 
@@ -462,3 +490,31 @@ class BaseSkill(ABC):
         Override in subclass if different. Default: 'items'.
         """
         return "items"
+
+    def _evaluate_notifications(self, event: str, result: CollectResult,
+                                tracker: SyncTracker, limits: RunLimits):
+        """Evaluate notification rules after a collection run.
+
+        Checks all rules for the given event, evaluates conditions,
+        pushes matching notifications via tracker.notify().
+        """
+        rules = self.get_notification_rules()
+        context = {
+            "skill_name": self.manifest.name,
+            "items_found": result.items_found,
+            "items_new": result.items_new,
+            "items_updated": result.items_updated,
+            "elapsed_minutes": round(limits.elapsed_minutes, 1),
+            "stop_reason": limits.stop_reason or "",
+            "previous_count": result.details.get("previous_count", 0),
+            "error": result.error or "",
+        }
+
+        for rule in rules:
+            if rule.event != event:
+                continue
+            evaluated = rule.evaluate(context)
+            if evaluated:
+                title, message = evaluated
+                link = rule.link_to.format(**context) if rule.link_to else ""
+                tracker.notify(title, message, rule.level, link)
