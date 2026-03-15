@@ -43,7 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger("memory_tap")
 
 from .chrome_manager import ChromeManager
-from .db.models import init_db
+from .db.core_db import init_core_db, get_setting, set_setting
 from .scheduler import SkillScheduler
 from .updater.skill_updater import SkillUpdater, LOCAL_SKILLS_DIR
 
@@ -146,7 +146,7 @@ def _handle_first_run(chrome: ChromeManager):
     """On first run, open dashboard in the isolated Chrome (for sign-in wizard).
     On subsequent runs, dashboard opens in user's default browser via tray icon.
     """
-    from .db.models import get_setting, set_setting
+    # get_setting and set_setting already imported at module level from core_db
 
     if get_setting("first_run_done") == "yes":
         return
@@ -302,7 +302,7 @@ def main():
 
     # 1. Initialize database
     logger.info("Initializing database...")
-    init_db()
+    init_core_db()
 
     # 2. Start Chrome Manager
     _chrome = ChromeManager()

@@ -9,7 +9,7 @@ import logging
 
 import requests
 
-from ..db.models import get_setting
+from ..db.core_db import get_setting
 from .search import build_rag_context
 
 logger = logging.getLogger("memory_tap.rag.chat")

@@ -506,7 +506,7 @@ class HealthMonitor:
         if was_healthy and not status["healthy"]:
             logger.warning("Health check FAILED: pid_alive=%s cdp_responds=%s",
                            status["pid_alive"], status["cdp_responds"])
-            from .db.models import add_alert
+            from .db.core_db import add_alert
             if not status["pid_alive"]:
                 # Chrome died — attempt auto-relaunch
                 logger.info("Chrome process dead — attempting auto-relaunch...")

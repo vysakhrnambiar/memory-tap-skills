@@ -5,7 +5,9 @@ Uses SQLite FTS5 for fast text search. No embeddings needed.
 Provides context assembly for LLM queries.
 """
 import logging
-from ..db.models import get_connection
+# TODO: RAG search needs rework for per-skill DBs (Phase 3C)
+# Currently disabled — will query each skill DB separately
+from ..db.core_db import get_core_connection
 
 logger = logging.getLogger("memory_tap.rag")
 

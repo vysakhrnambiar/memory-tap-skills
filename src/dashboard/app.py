@@ -17,7 +17,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..db.models import get_connection, get_setting, set_setting, get_alerts, dismiss_alert
+from ..db.core_db import (
+    get_core_connection, get_setting, set_setting,
+    get_alerts, dismiss_alert, get_all_skills,
+    get_notifications, mark_notification_read, dismiss_notification,
+)
 
 logger = logging.getLogger("memory_tap.dashboard")
 
@@ -52,7 +56,7 @@ async def index():
 
 @app.get("/api/settings")
 async def get_settings():
-    conn = get_connection(_db_path)
+    conn = get_core_connection(_db_path)
     rows = conn.execute("SELECT key, value FROM settings").fetchall()
     conn.close()
     settings = {r["key"]: r["value"] for r in rows}
@@ -76,7 +80,7 @@ async def update_settings(request: Request):
 
 @app.get("/api/sources")
 async def get_sources():
-    conn = get_connection(_db_path)
+    conn = get_core_connection(_db_path)
     rows = conn.execute(
         "SELECT * FROM sources ORDER BY name"
     ).fetchall()
@@ -104,7 +108,7 @@ async def get_auth_providers():
         return []
 
     providers: dict[str, dict] = {}
-    conn = get_connection(_db_path)
+    conn = get_core_connection(_db_path)
     rows = conn.execute("SELECT name, login_status FROM sources").fetchall()
     conn.close()
     db_status = {r["name"]: r["login_status"] for r in rows}
@@ -128,7 +132,7 @@ async def get_auth_providers():
 
 @app.post("/api/sources/{name}/toggle")
 async def toggle_source(name: str):
-    conn = get_connection(_db_path)
+    conn = get_core_connection(_db_path)
     conn.execute(
         "UPDATE sources SET enabled = CASE WHEN enabled = 1 THEN 0 ELSE 1 END WHERE name = ?",
         (name,),
@@ -218,7 +222,7 @@ async def check_skill_updates():
 @app.get("/api/timeline")
 async def get_timeline(days: int = 7):
     """Get collected data grouped by day for the timeline view."""
-    conn = get_connection(_db_path)
+    conn = get_core_connection(_db_path)
     since = (datetime.now() - timedelta(days=days)).isoformat()
 
     timeline = {}
@@ -339,7 +343,7 @@ async def list_screenshots():
 @app.get("/api/stats")
 async def get_stats():
     """Overall collection stats."""
-    conn = get_connection(_db_path)
+    conn = get_core_connection(_db_path)
     stats = {
         "total_conversations": conn.execute("SELECT COUNT(*) as c FROM conversations").fetchone()["c"],
         "total_messages": conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"],
@@ -359,7 +363,7 @@ async def get_stats():
 @app.get("/api/search")
 async def search(q: str, limit: int = 20):
     """Full-text search across all collected data."""
-    conn = get_connection(_db_path)
+    conn = get_core_connection(_db_path)
     results = []
 
     # Search messages
@@ -411,7 +415,7 @@ async def search(q: str, limit: int = 20):
 @app.get("/api/conversations/{conv_id}")
 async def get_conversation(conv_id: int):
     """Get full conversation with all messages."""
-    conn = get_connection(_db_path)
+    conn = get_core_connection(_db_path)
     conv = conn.execute(
         "SELECT * FROM conversations WHERE id = ?", (conv_id,)
     ).fetchone()
