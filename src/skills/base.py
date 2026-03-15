@@ -28,6 +28,7 @@ class SkillManifest:
     target_url: str              # e.g. "https://youtube.com"
     description: str             # human-readable
     auth_provider: str = ""      # "google", "openai", etc — groups sign-in on dashboard
+    tabs_needed: int = 1         # how many persistent tabs this skill needs
     schedule_hours: int = 3      # how often to run
     login_url: str = ""          # URL to show user for manual login
     checksum: str = ""           # sha256 of the skill file
@@ -150,31 +151,31 @@ class BaseSkill(ABC):
         return f"https://github.com/vysakhrnambiar/memory-tap-skills/issues/new?{params}"
 
     def run(self, client: CDPClient, db_path: str | None = None) -> CollectResult:
-        """Full skill execution: check login → collect → report.
+        """Full skill execution: get/create persistent tab → check login → collect.
 
-        Called by the scheduler. Handles tab lifecycle.
+        Uses persistent tabs that survive between runs. Tabs are kept open
+        in Chrome — only the WebSocket connection is released after each run.
         """
         m = self.manifest
         tracker = SyncTracker(m.name, db_path)
         log_id = tracker.start_sync()
 
-        # Recall: assess browser state, close orphans, ensure clean slate
-        snapshot = client.recall()
-        if not snapshot["ready"]:
-            error_msg = f"Browser not in clean state: {snapshot['tab_count']} tabs open"
-            logger.error("Skill %s aborted: %s", m.name, error_msg)
-            tracker.finish_sync(0, 0, 0, error=error_msg)
-            return CollectResult(error=error_msg)
-
         tab = None
         try:
-            tab = client.new_tab(m.target_url)
+            # Get or create persistent tab for this skill
+            tab = client.get_or_create_tab(m.name, m.target_url, db_path=db_path)
             tab.set_working()
+
+            # Navigate to target URL (tab may be on a different page from last run)
+            current_url = tab.get_url()
+            if m.target_url not in current_url:
+                tab.navigate(m.target_url)
 
             # Check login
             if not self.check_login(tab):
                 screenshot_path = self._save_error_screenshot(tab, f"{m.name}_login_fail")
                 tracker.set_login_status("not_logged_in")
+                client.save_tab_state(m.name, tab, login_verified=False, db_path=db_path)
                 error_msg = (
                     f"Not logged in to {m.name}. "
                     f"Please open the dashboard and sign into {m.target_url}"
@@ -186,6 +187,7 @@ class BaseSkill(ABC):
                 return result
 
             tracker.set_login_status("logged_in")
+            client.save_tab_state(m.name, tab, login_verified=True, db_path=db_path)
 
             # Collect
             result = self.collect(tab, tracker)
@@ -240,6 +242,7 @@ class BaseSkill(ABC):
             if tab:
                 try:
                     tab.set_idle()
-                    client.close_tab(tab)
+                    # Release WS connection but keep tab open in Chrome
+                    client.release_tab(m.name, tab, db_path=db_path)
                 except Exception:
                     pass

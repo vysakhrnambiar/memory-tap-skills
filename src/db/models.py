@@ -137,6 +137,21 @@ def init_db(db_path: str | None = None):
         )
     """)
 
+    # --- Tab Registry (persistent tabs survive restarts) ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tab_registry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            skill_name TEXT NOT NULL,
+            tab_index INTEGER NOT NULL DEFAULT 0,
+            chrome_tab_id TEXT,
+            last_url TEXT NOT NULL DEFAULT 'about:blank',
+            login_verified INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(skill_name, tab_index)
+        )
+    """)
+
     # --- Alerts (dashboard notifications) ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS alerts (
@@ -255,3 +270,76 @@ def dismiss_alert(alert_id: int, db_path: str | None = None):
     conn.execute("UPDATE alerts SET dismissed = 1 WHERE id = ?", (alert_id,))
     conn.commit()
     conn.close()
+
+
+# --- Tab Registry ---
+
+def get_skill_tabs(skill_name: str, db_path: str | None = None) -> list[dict]:
+    """Get all registered tabs for a skill."""
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT * FROM tab_registry WHERE skill_name = ? ORDER BY tab_index",
+        (skill_name,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def upsert_skill_tab(skill_name: str, tab_index: int, chrome_tab_id: str,
+                     last_url: str, login_verified: bool = False,
+                     db_path: str | None = None):
+    """Insert or update a tab registry entry."""
+    conn = get_connection(db_path)
+    conn.execute(
+        """INSERT INTO tab_registry (skill_name, tab_index, chrome_tab_id, last_url, login_verified, updated_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(skill_name, tab_index) DO UPDATE SET
+               chrome_tab_id = excluded.chrome_tab_id,
+               last_url = excluded.last_url,
+               login_verified = excluded.login_verified,
+               updated_at = datetime('now')""",
+        (skill_name, tab_index, chrome_tab_id, last_url, int(login_verified)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_tab_url(skill_name: str, tab_index: int, last_url: str,
+                   db_path: str | None = None):
+    """Update just the last_url for a tab (called during navigation)."""
+    conn = get_connection(db_path)
+    conn.execute(
+        """UPDATE tab_registry SET last_url = ?, updated_at = datetime('now')
+           WHERE skill_name = ? AND tab_index = ?""",
+        (last_url, skill_name, tab_index),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clear_skill_tabs(skill_name: str, db_path: str | None = None):
+    """Remove all tab entries for a skill."""
+    conn = get_connection(db_path)
+    conn.execute("DELETE FROM tab_registry WHERE skill_name = ?", (skill_name,))
+    conn.commit()
+    conn.close()
+
+
+def get_all_registered_tabs(db_path: str | None = None) -> list[dict]:
+    """Get all registered tabs across all skills."""
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT * FROM tab_registry ORDER BY skill_name, tab_index"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def count_active_skills(db_path: str | None = None) -> int:
+    """Count how many distinct skills have registered tabs."""
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT skill_name) as cnt FROM tab_registry"
+    ).fetchone()
+    conn.close()
+    return row["cnt"] if row else 0

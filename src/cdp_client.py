@@ -19,7 +19,10 @@ import requests
 import websocket
 
 from .chrome_manager import get_active_port
-from .db.models import add_alert
+from .db.models import (
+    add_alert, get_skill_tabs, upsert_skill_tab, update_tab_url,
+    clear_skill_tabs, get_all_registered_tabs, count_active_skills,
+)
 
 logger = logging.getLogger("memory_tap.cdp")
 
@@ -661,8 +664,8 @@ class CDPClient:
         except Exception:
             return []
 
-    def recall(self) -> dict:
-        """Assess the current browser landscape before acting.
+    def recall(self, db_path: str | None = None) -> dict:
+        """Assess the current browser landscape.
 
         Returns a snapshot:
             {
@@ -672,8 +675,8 @@ class CDPClient:
                 "ready": bool,
             }
 
-        Closes any orphaned tabs (non-about:blank tabs we don't own).
-        Ensures a clean single-tab state before a skill starts.
+        Preserves persistent skill tabs (registered in DB).
+        Only closes truly orphaned tabs (unregistered, non-blank).
         """
         all_tabs = self.list_tabs()
         snapshot = {
@@ -685,32 +688,26 @@ class CDPClient:
 
         logger.info("Recall: %d tab(s) open", len(all_tabs))
 
-        # Track which tab IDs we own
-        owned_ids = {tab.id for tab in self._tabs}
+        # Get all registered tab IDs from DB (persistent skill tabs)
+        registered = get_all_registered_tabs(db_path)
+        registered_ids = {r["chrome_tab_id"] for r in registered if r.get("chrome_tab_id")}
 
-        # Close orphaned tabs (tabs we didn't open)
+        # Also track tabs we currently hold a WS connection to
+        owned_ids = {tab.id for tab in self._tabs}
+        protected_ids = registered_ids | owned_ids
+
+        # Close only truly orphaned tabs
         for tab_info in all_tabs:
             tab_id = tab_info["id"]
             tab_url = tab_info.get("url", "")
 
-            if tab_id in owned_ids:
-                # We own this tab — leave it
-                logger.info("  Tab %s: owned (%s)", tab_id[:8], tab_url[:60])
+            if tab_id in protected_ids:
+                logger.info("  Tab %s: registered/owned (%s)", tab_id[:8], tab_url[:60])
                 continue
 
             if tab_url in ("about:blank", "chrome://newtab/", ""):
-                # Blank tab — leave one, close extras
-                if len(all_tabs) > 1:
-                    logger.info("  Tab %s: blank orphan, closing", tab_id[:8])
-                    try:
-                        requests.get(f"{self.base_url}/json/close/{tab_id}", timeout=3)
-                        snapshot["orphans_closed"] += 1
-                    except Exception:
-                        pass
-                else:
-                    logger.info("  Tab %s: only blank tab, keeping", tab_id[:8])
+                logger.info("  Tab %s: blank tab, keeping", tab_id[:8])
             else:
-                # Non-blank orphan — close it
                 logger.info("  Tab %s: orphan on %s, closing", tab_id[:8], tab_url[:60])
                 try:
                     requests.get(f"{self.base_url}/json/close/{tab_id}", timeout=3)
@@ -721,34 +718,16 @@ class CDPClient:
         if snapshot["orphans_closed"] > 0:
             logger.info("Recall: closed %d orphaned tab(s)", snapshot["orphans_closed"])
 
-        # Re-check state after cleanup
+        # Re-check
         remaining = self.list_tabs()
         snapshot["tab_count"] = len(remaining)
         snapshot["tabs"] = [{"id": t["id"], "url": t.get("url", ""), "title": t.get("title", "")} for t in remaining]
-
-        if len(remaining) > 5:
-            logger.warning("Recall: still %d tabs open after cleanup — something is wrong", len(remaining))
-            snapshot["ready"] = False
+        snapshot["ready"] = True
 
         return snapshot
 
     def new_tab(self, url: str = "about:blank") -> CDPTab:
-        """Create a new tab and optionally navigate to URL.
-
-        Enforces max 1 active tab. If a tab already exists, closes it first.
-        """
-        # Max 1 tab: close any existing tabs we own
-        if self._tabs:
-            logger.warning("Max 1 tab enforced — closing %d existing tab(s) before opening new one",
-                           len(self._tabs))
-            for old_tab in list(self._tabs):
-                try:
-                    old_tab.disconnect()
-                    requests.get(f"{self.base_url}/json/close/{old_tab.id}", timeout=3)
-                except Exception:
-                    pass
-            self._tabs.clear()
-
+        """Create a new tab and optionally navigate to URL."""
         for method in [requests.put, requests.get]:
             try:
                 resp = method(f"{self.base_url}/json/new?url=about:blank", timeout=10)
@@ -805,3 +784,154 @@ class CDPClient:
         tab.disconnect()
         if tab in self._tabs:
             self._tabs.remove(tab)
+
+    # --- Persistent Tab Management ---
+
+    MAX_ACTIVE_SKILLS = 25
+
+    def get_or_create_tab(self, skill_name: str, url: str,
+                          tab_index: int = 0,
+                          db_path: str | None = None) -> CDPTab:
+        """Get an existing persistent tab for a skill, or create one.
+
+        Persistent tabs survive between skill runs:
+        - Tab ID + last_url stored in DB
+        - On restart: reconnects to existing tab or creates new one at last_url
+        - Tracks login_verified status
+
+        Args:
+            skill_name: which skill this tab belongs to
+            url: URL to navigate to if creating new tab
+            tab_index: 0 for first tab, 1+ for skills needing multiple tabs
+            db_path: SQLite path
+        """
+        # Check active skill limit
+        active = count_active_skills(db_path)
+        existing_skills = {r["skill_name"] for r in get_all_registered_tabs(db_path)}
+        if active >= self.MAX_ACTIVE_SKILLS and skill_name not in existing_skills:
+            raise RuntimeError(
+                f"Active skill limit reached ({self.MAX_ACTIVE_SKILLS}). "
+                f"Disable a skill before adding new ones."
+            )
+
+        # Check if we have a registered tab for this skill
+        registered = get_skill_tabs(skill_name, db_path)
+        entry = next((r for r in registered if r["tab_index"] == tab_index), None)
+
+        if entry and entry.get("chrome_tab_id"):
+            # Try to reconnect to existing tab
+            tab = self._try_reconnect_tab(entry["chrome_tab_id"], entry["last_url"])
+            if tab:
+                logger.info("Reconnected to persistent tab %s for %s (url: %s)",
+                            tab.id[:8], skill_name, tab.url[:60])
+                return tab
+            else:
+                logger.info("Persistent tab %s for %s is gone — creating new one",
+                            entry["chrome_tab_id"][:8], skill_name)
+
+        # Create new tab
+        tab = self.new_tab(url)
+        # Register in DB
+        upsert_skill_tab(skill_name, tab_index, tab.id, url, db_path=db_path)
+        logger.info("Created persistent tab %s for %s at %s", tab.id[:8], skill_name, url[:60])
+        return tab
+
+    def _try_reconnect_tab(self, chrome_tab_id: str, last_url: str) -> CDPTab | None:
+        """Try to reconnect to an existing Chrome tab by ID.
+
+        Returns connected CDPTab or None if tab no longer exists.
+        """
+        try:
+            all_tabs = self.list_tabs()
+            info = next((t for t in all_tabs if t["id"] == chrome_tab_id), None)
+            if not info:
+                return None
+            if "webSocketDebuggerUrl" not in info:
+                return None
+
+            tab = CDPTab(
+                tab_id=info["id"],
+                ws_url=info["webSocketDebuggerUrl"],
+                url=info.get("url", last_url),
+                cdp_base_url=self.base_url,
+            )
+            tab.connect()
+
+            # Verify tab is responsive
+            if not tab.ping():
+                tab.disconnect()
+                return None
+
+            self._tabs.append(tab)
+            return tab
+
+        except Exception as e:
+            logger.warning("Failed to reconnect to tab %s: %s", chrome_tab_id[:8], e)
+            return None
+
+    def save_tab_state(self, skill_name: str, tab: CDPTab,
+                       tab_index: int = 0, login_verified: bool = False,
+                       db_path: str | None = None):
+        """Save current tab state to DB (call after navigation or login check)."""
+        current_url = tab.get_url() if tab.is_usable else tab.url
+        upsert_skill_tab(
+            skill_name, tab_index, tab.id, current_url,
+            login_verified=login_verified, db_path=db_path,
+        )
+
+    def restore_all_tabs(self, db_path: str | None = None) -> dict[str, list[CDPTab]]:
+        """Restore all persistent tabs from DB after restart.
+
+        Returns dict mapping skill_name → list of connected CDPTabs.
+        Tabs that can't be reconnected are recreated at their last_url.
+        """
+        registered = get_all_registered_tabs(db_path)
+        restored: dict[str, list[CDPTab]] = {}
+
+        for entry in registered:
+            skill = entry["skill_name"]
+            if skill not in restored:
+                restored[skill] = []
+
+            # Try reconnect first
+            tab = None
+            if entry.get("chrome_tab_id"):
+                tab = self._try_reconnect_tab(entry["chrome_tab_id"], entry["last_url"])
+
+            if tab:
+                logger.info("Restored tab for %s at %s", skill, tab.url[:60])
+            else:
+                # Recreate at last_url
+                last_url = entry.get("last_url", "about:blank")
+                try:
+                    tab = self.new_tab(last_url)
+                    upsert_skill_tab(
+                        skill, entry["tab_index"], tab.id, last_url,
+                        db_path=db_path,
+                    )
+                    logger.info("Recreated tab for %s at %s", skill, last_url[:60])
+                except Exception as e:
+                    logger.error("Failed to recreate tab for %s: %s", skill, e)
+                    continue
+
+            restored[skill].append(tab)
+
+        return restored
+
+    def release_tab(self, skill_name: str, tab: CDPTab,
+                    tab_index: int = 0, db_path: str | None = None):
+        """Release a persistent tab — disconnect WS but keep tab open in Chrome.
+
+        Saves current URL to DB for recovery. Called after skill run completes.
+        """
+        current_url = tab.get_url() if tab.is_usable else tab.url
+        upsert_skill_tab(
+            skill_name, tab_index, tab.id, current_url,
+            login_verified=True, db_path=db_path,
+        )
+        # Disconnect WS but don't close the Chrome tab
+        tab.disconnect()
+        if tab in self._tabs:
+            self._tabs.remove(tab)
+        # Reset state so it can be reconnected later
+        tab.state = TabState.IDLE
