@@ -140,17 +140,57 @@ class SkillScheduler:
                 logger.error("Chrome not available")
                 return None
 
-        with CDPClient() as client:
-            result = skill.run(client, self.db_path)
+        # Run skill with hard kill timeout (45 min safety net)
+        HARD_KILL_MINUTES = 45
+        result_holder = [None]
+        error_holder = [None]
+
+        def _run_skill():
+            try:
+                with CDPClient() as client:
+                    result_holder[0] = skill.run(client, self.db_path)
+            except Exception as e:
+                error_holder[0] = str(e)
+
+        run_thread = threading.Thread(target=_run_skill, daemon=True)
+        run_thread.start()
+        run_thread.join(timeout=HARD_KILL_MINUTES * 60)
+
+        if run_thread.is_alive():
+            logger.error("Skill %s HARD KILLED after %d minutes", skill_name, HARD_KILL_MINUTES)
+            from .db.models import add_alert
+            add_alert(
+                f"{skill_name}: Hard Kill",
+                f"Skill ran for over {HARD_KILL_MINUTES} minutes and was forcefully stopped.",
+                level="error", source=skill_name, db_path=self.db_path,
+            )
             return {
-                "skill": skill_name,
-                "success": result.success,
-                "items_found": result.items_found,
-                "items_new": result.items_new,
-                "items_updated": result.items_updated,
-                "error": result.error,
-                "details": result.details,
+                "skill": skill_name, "success": False, "items_found": 0,
+                "items_new": 0, "items_updated": 0,
+                "error": f"Hard killed after {HARD_KILL_MINUTES} minutes",
+                "details": {},
             }
+
+        if error_holder[0]:
+            return {
+                "skill": skill_name, "success": False, "items_found": 0,
+                "items_new": 0, "items_updated": 0,
+                "error": error_holder[0], "details": {},
+            }
+
+        result = result_holder[0]
+        if result is None:
+            return None
+
+        return {
+            "skill": skill_name,
+            "success": result.success,
+            "items_found": result.items_found,
+            "items_new": result.items_new,
+            "items_updated": result.items_updated,
+            "error": result.error,
+            "details": result.details,
+        }
 
     def start(self):
         """Start the scheduler background thread and health monitor."""

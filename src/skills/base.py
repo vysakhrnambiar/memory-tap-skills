@@ -9,15 +9,111 @@ The system auto-pulls new versions from that repo.
 """
 import logging
 import os
+import time as _time
 import urllib.parse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 
 from ..cdp_client import CDPTab, CDPClient
 from ..db.models import add_alert, get_connection
 from ..db.sync_tracker import SyncTracker
 
 logger = logging.getLogger("memory_tap.skill")
+
+
+class StopStrategy(Enum):
+    """How a skill decides when to stop collecting.
+
+    Every skill MUST declare one. Determined during CDP probe.
+    """
+    TIMESTAMP = "timestamp"        # Site shows time per item → stop at last collected time
+    DATE_GROUP = "date_group"      # Site groups by date (Today, Yesterday) → stop at last date
+    CONSECUTIVE_KNOWN = "consecutive_known"  # Stop after N consecutive already-known items
+    ITEM_COUNT = "item_count"      # Simple count limit (fallback, not recommended)
+
+
+@dataclass
+class RunLimits:
+    """Tracks collection limits during a skill run.
+
+    Skills call should_stop() after each item. Framework enforces:
+    - Item count (first run only)
+    - Time cap
+    - Scroll behavior (humanness)
+
+    Stop signal (when to stop because we've reached old data) is
+    handled by the skill's should_stop_collecting() method, NOT here.
+    """
+    max_items: int = 0              # 0 = unlimited (subsequent runs)
+    max_minutes: float = 30.0
+    max_scrolls_before_pause: int = 10
+    pause_seconds_min: float = 30.0
+    pause_seconds_max: float = 90.0
+    max_scroll_sessions: int = 20
+
+    # Runtime state
+    items_collected: int = 0
+    _start_time: float = field(default_factory=_time.time)
+    _scroll_count: int = 0
+    _session_count: int = 0
+
+    def item_done(self):
+        """Call after collecting one item."""
+        self.items_collected += 1
+
+    def scroll_done(self):
+        """Call after each scroll. Returns pause duration if pause needed, else 0."""
+        self._scroll_count += 1
+        if self._scroll_count >= self.max_scrolls_before_pause:
+            self._scroll_count = 0
+            self._session_count += 1
+            import random
+            return random.uniform(self.pause_seconds_min, self.pause_seconds_max)
+        return 0
+
+    @property
+    def elapsed_minutes(self) -> float:
+        return (_time.time() - self._start_time) / 60.0
+
+    @property
+    def time_exceeded(self) -> bool:
+        return self.elapsed_minutes >= self.max_minutes
+
+    @property
+    def items_exceeded(self) -> bool:
+        return self.max_items > 0 and self.items_collected >= self.max_items
+
+    @property
+    def sessions_exceeded(self) -> bool:
+        return self._session_count >= self.max_scroll_sessions
+
+    def should_stop(self) -> bool:
+        """Check if any limit is hit (time, items, sessions).
+
+        NOTE: This does NOT check the skill's stop signal (old data detection).
+        Skills must also call their own should_stop_collecting() separately.
+        """
+        if self.time_exceeded:
+            logger.info("RunLimits: time cap reached (%.1f min)", self.elapsed_minutes)
+            return True
+        if self.items_exceeded:
+            logger.info("RunLimits: item cap reached (%d)", self.items_collected)
+            return True
+        if self.sessions_exceeded:
+            logger.info("RunLimits: scroll session cap reached (%d)", self._session_count)
+            return True
+        return False
+
+    @property
+    def stop_reason(self) -> str:
+        if self.time_exceeded:
+            return f"time_limit ({self.elapsed_minutes:.0f} min)"
+        if self.items_exceeded:
+            return f"item_limit ({self.items_collected})"
+        if self.sessions_exceeded:
+            return f"scroll_sessions ({self._session_count})"
+        return ""
 
 
 @dataclass
@@ -32,6 +128,10 @@ class SkillManifest:
     schedule_hours: int = 3      # how often to run
     login_url: str = ""          # URL to show user for manual login
     checksum: str = ""           # sha256 of the skill file
+    # Collection limits
+    max_items_first_run: int = 100   # item cap on first run (0 = unlimited)
+    max_items_per_run: int = 0       # 0 = unlimited for subsequent runs
+    max_minutes_per_run: int = 30    # time cap per run
 
 
 @dataclass
@@ -51,10 +151,12 @@ class CollectResult:
 class BaseSkill(ABC):
     """Base class for all collection skills.
 
-    Subclasses must implement:
+    Subclasses MUST implement:
     - manifest: SkillManifest property
     - check_login(tab): verify user is logged in
-    - collect(tab, tracker): navigate + collect data
+    - collect(tab, tracker, limits): navigate + collect data
+    - stop_strategy: which StopStrategy this skill uses
+    - should_stop_collecting(item, tracker): detect when we've reached old data
 
     The skill engine handles:
     - Chrome/CDP lifecycle
@@ -79,14 +181,82 @@ class BaseSkill(ABC):
         ...
 
     @abstractmethod
-    def collect(self, tab: CDPTab, tracker: SyncTracker) -> CollectResult:
+    def collect(self, tab: CDPTab, tracker: SyncTracker,
+                limits: RunLimits) -> CollectResult:
         """Navigate the site and collect data.
 
         Use human-like interactions from src.human module.
         Store data via the tracker.
+        Check limits.should_stop() AND self.should_stop_collecting() after each item.
         Return what was found.
         """
         ...
+
+    @property
+    @abstractmethod
+    def stop_strategy(self) -> StopStrategy:
+        """Declare which stop strategy this skill uses.
+
+        Determined during CDP probe for each website.
+        MUST be implemented — no default.
+        """
+        ...
+
+    @abstractmethod
+    def should_stop_collecting(self, item: dict, tracker: SyncTracker) -> bool:
+        """Check if we've reached previously collected territory.
+
+        Called after each item. The skill decides based on its stop_strategy:
+        - TIMESTAMP: item's timestamp <= last collected timestamp
+        - DATE_GROUP: item's date group is before last collected date
+        - CONSECUTIVE_KNOWN: 3+ consecutive already-known items
+        - ITEM_COUNT: simple count (fallback)
+
+        This is ONE layer of the stop mechanism. RunLimits provides additional
+        layers (time cap, scroll sessions). Both must be checked.
+
+        MUST be implemented — no default. Determined during CDP probe.
+        """
+        ...
+
+    def should_stop(self, item: dict, tracker: SyncTracker,
+                    limits: RunLimits) -> tuple[bool, str]:
+        """Multi-layer stop check. Fool-proof — checks ALL stop mechanisms.
+
+        Returns (should_stop, reason).
+        Skills call this after each item instead of checking individually.
+
+        Layers:
+        1. RunLimits: time cap exceeded?
+        2. RunLimits: item cap exceeded? (first run only)
+        3. RunLimits: scroll sessions exceeded?
+        4. Skill's own stop signal: reached old data?
+
+        All layers are checked every time. If ANY says stop → stop.
+        """
+        # Layer 1-3: Framework limits
+        if limits.should_stop():
+            return True, f"limit: {limits.stop_reason}"
+
+        # Layer 4: Skill's own stop signal
+        if self.should_stop_collecting(item, tracker):
+            return True, "reached_previously_collected"
+
+        return False, ""
+
+    def create_run_limits(self, is_first_run: bool) -> RunLimits:
+        """Create RunLimits for this run based on manifest and first/subsequent."""
+        m = self.manifest
+        if is_first_run:
+            return RunLimits(
+                max_items=m.max_items_first_run,
+                max_minutes=m.max_minutes_per_run,
+            )
+        else:
+            return RunLimits(
+                max_items=m.max_items_per_run,  # 0 = unlimited
+                max_minutes=m.max_minutes_per_run,
+            )
 
     def get_login_url(self) -> str:
         """URL to open for user to log in. Defaults to target_url."""
@@ -189,15 +359,32 @@ class BaseSkill(ABC):
             tracker.set_login_status("logged_in")
             client.save_tab_state(m.name, tab, login_verified=True, db_path=db_path)
 
+            # Create run limits
+            is_first_run = tracker.get_login_status() != "logged_in" or \
+                not self._get_previous_item_count(m.name, db_path)
+            limits = self.create_run_limits(is_first_run)
+            logger.info("Skill %s: %s run, limits: max_items=%d, max_min=%.0f",
+                        m.name, "first" if is_first_run else "subsequent",
+                        limits.max_items, limits.max_minutes)
+
             # Collect
-            result = self.collect(tab, tracker)
+            result = self.collect(tab, tracker, limits)
+
+            # Record limit info
+            result.details["elapsed_minutes"] = round(limits.elapsed_minutes, 1)
+            result.details["items_collected"] = limits.items_collected
+            if limits.stop_reason:
+                result.details["limit_reached"] = limits.stop_reason
+
             tracker.finish_sync(
                 result.items_found, result.items_new, result.items_updated,
                 error=result.error,
             )
             logger.info(
-                "Skill %s: found=%d new=%d updated=%d",
+                "Skill %s: found=%d new=%d updated=%d (%.1f min, %s)",
                 m.name, result.items_found, result.items_new, result.items_updated,
+                limits.elapsed_minutes,
+                limits.stop_reason or "completed",
             )
 
             # Zero-items warning: if logged in but found nothing, and we had data before
