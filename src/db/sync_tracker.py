@@ -1,223 +1,110 @@
 """
-Sync Tracker — incremental sync logic for Memory Tap.
+Sync Tracker — tracks sync state for skills.
 
-Key strategy for detecting updates:
-- ChatGPT/Gemini: conversation list position. If a conversation moved to
-  the top since last sync, it was updated. Track position per conversation.
-- YouTube: video_id uniqueness. If we've seen it, skip it.
-- Sync log tracks every run for audit.
+Split architecture:
+- Sync log + login status → core.db (shared infrastructure)
+- Data queries (conversations, videos, etc.) → skill's own DB connection
+
+Skills get a SyncTracker with both connections. Core operations use core.db,
+data operations use the skill's own conn.
 """
 import sqlite3
-from datetime import datetime, timezone
+import logging
 
-from .models import get_connection
+from .core_db import (
+    get_core_connection, start_sync_log, finish_sync_log,
+    update_skill_login_status, update_skill_sync,
+    add_notification, CORE_DB_PATH,
+)
+
+logger = logging.getLogger("memory_tap.db.sync")
 
 
 class SyncTracker:
-    """Tracks sync state for a source (skill)."""
+    """Tracks sync state for a skill.
 
-    def __init__(self, source: str, db_path: str | None = None):
-        self.source = source
-        self.db_path = db_path
+    Args:
+        skill_name: name of the skill
+        skill_conn: connection to the skill's own DB (for data queries)
+        core_db_path: path to core.db (for sync_log, login_status)
+    """
+
+    def __init__(self, skill_name: str, skill_conn: sqlite3.Connection,
+                 core_db_path: str | None = None):
+        self.skill_name = skill_name
+        self.conn = skill_conn              # skill's own DB
+        self.core_db_path = core_db_path or CORE_DB_PATH
         self._log_id: int | None = None
 
+    # --- Sync log (core.db) ---
+
     def start_sync(self) -> int:
-        """Mark sync as started. Returns log ID."""
-        conn = get_connection(self.db_path)
-        cur = conn.execute(
-            "INSERT INTO sync_log (source) VALUES (?)",
-            (self.source,),
-        )
-        self._log_id = cur.lastrowid
-        conn.commit()
-        conn.close()
+        """Mark sync as started in core.db. Returns log ID."""
+        self._log_id = start_sync_log(self.skill_name, self.core_db_path)
         return self._log_id
 
     def finish_sync(self, items_found: int, items_new: int, items_updated: int,
-                    error: str | None = None):
-        """Mark sync as finished."""
+                    elapsed_minutes: float = 0, error: str | None = None,
+                    stop_reason: str | None = None):
+        """Mark sync as finished in core.db."""
         if not self._log_id:
             return
-        conn = get_connection(self.db_path)
         status = "error" if error else "completed"
-        conn.execute(
-            """UPDATE sync_log
-               SET finished_at = datetime('now'), items_found = ?, items_new = ?,
-                   items_updated = ?, status = ?, error = ?
-               WHERE id = ?""",
-            (items_found, items_new, items_updated, status, error, self._log_id),
+        finish_sync_log(
+            self._log_id, items_found, items_new, items_updated,
+            elapsed_minutes, status, error, stop_reason,
+            self.core_db_path,
         )
-        # Update source last_sync
-        conn.execute(
-            """UPDATE sources
-               SET last_sync_at = datetime('now'), last_sync_items = ?,
-                   last_error = ?
-               WHERE name = ?""",
-            (items_found, error, self.source),
+        # Update skill registry
+        update_skill_sync(
+            self.skill_name, items_found, error,
+            self.core_db_path,
         )
-        conn.commit()
-        conn.close()
 
-    # --- Conversation tracking ---
-
-    def get_conversation(self, external_id: str) -> dict | None:
-        """Get existing conversation by external ID."""
-        conn = get_connection(self.db_path)
-        row = conn.execute(
-            "SELECT * FROM conversations WHERE source = ? AND external_id = ?",
-            (self.source, external_id),
-        ).fetchone()
-        conn.close()
-        return dict(row) if row else None
-
-    def upsert_conversation(self, external_id: str, title: str, url: str | None = None,
-                            list_position: int | None = None) -> tuple[int, bool]:
-        """Insert or update conversation. Returns (id, is_new)."""
-        conn = get_connection(self.db_path)
-        existing = conn.execute(
-            "SELECT id, list_position FROM conversations WHERE source = ? AND external_id = ?",
-            (self.source, external_id),
-        ).fetchone()
-
-        if existing:
-            conn.execute(
-                """UPDATE conversations
-                   SET title = ?, url = COALESCE(?, url), list_position = ?,
-                       last_synced_at = datetime('now')
-                   WHERE id = ?""",
-                (title, url, list_position, existing["id"]),
-            )
-            conn.commit()
-            conn.close()
-            return existing["id"], False
-        else:
-            cur = conn.execute(
-                """INSERT INTO conversations (source, external_id, title, url, list_position,
-                                             created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
-                (self.source, external_id, title, url, list_position),
-            )
-            conv_id = cur.lastrowid
-            conn.commit()
-            conn.close()
-            return conv_id, True
-
-    def conversation_needs_update(self, external_id: str, current_position: int) -> bool:
-        """Check if conversation moved up in the list (was updated)."""
-        conn = get_connection(self.db_path)
-        row = conn.execute(
-            "SELECT list_position FROM conversations WHERE source = ? AND external_id = ?",
-            (self.source, external_id),
-        ).fetchone()
-        conn.close()
-        if not row:
-            return True  # new conversation
-        old_pos = row["list_position"]
-        if old_pos is None:
-            return True
-        return current_position < old_pos  # moved up = was updated
-
-    def get_message_count(self, conversation_id: int) -> int:
-        """Get number of messages already stored for a conversation."""
-        conn = get_connection(self.db_path)
-        row = conn.execute(
-            "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?",
-            (conversation_id,),
-        ).fetchone()
-        conn.close()
-        return row["cnt"] if row else 0
-
-    def add_messages(self, conversation_id: int, messages: list[dict]):
-        """Add messages to a conversation. Skips duplicates by message_order."""
-        if not messages:
-            return
-        conn = get_connection(self.db_path)
-        for msg in messages:
-            try:
-                conn.execute(
-                    """INSERT OR IGNORE INTO messages
-                       (conversation_id, role, content, thinking_block, message_order, timestamp)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (conversation_id, msg["role"], msg["content"],
-                     msg.get("thinking_block"), msg["message_order"],
-                     msg.get("timestamp")),
-                )
-            except sqlite3.IntegrityError:
-                pass
-        # Update message count
-        count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?",
-            (conversation_id,),
-        ).fetchone()["cnt"]
-        conn.execute(
-            "UPDATE conversations SET message_count = ?, updated_at = datetime('now') WHERE id = ?",
-            (count, conversation_id),
-        )
-        conn.commit()
-        conn.close()
-
-    def add_artifact(self, conversation_id: int, filename: str,
-                     content: str | None = None, file_path: str | None = None,
-                     message_id: int | None = None, file_size: int | None = None):
-        """Store an artifact (downloaded file) from a conversation."""
-        conn = get_connection(self.db_path)
-        conn.execute(
-            """INSERT INTO artifacts (conversation_id, message_id, filename, content, file_path, file_size)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (conversation_id, message_id, filename, content, file_path, file_size),
-        )
-        conn.commit()
-        conn.close()
-
-    # --- YouTube tracking ---
-
-    def video_exists(self, video_id: str) -> bool:
-        """Check if we already have this video."""
-        conn = get_connection(self.db_path)
-        row = conn.execute(
-            "SELECT 1 FROM youtube_videos WHERE video_id = ?", (video_id,)
-        ).fetchone()
-        conn.close()
-        return row is not None
-
-    def add_video(self, video_id: str, title: str, channel: str | None,
-                  url: str, description: str | None = None,
-                  top_comment: str | None = None,
-                  top_comment_author: str | None = None,
-                  duration: str | None = None,
-                  watched_at: str | None = None) -> int:
-        """Add a YouTube video. Returns row ID."""
-        conn = get_connection(self.db_path)
-        cur = conn.execute(
-            """INSERT OR IGNORE INTO youtube_videos
-               (video_id, title, channel, url, description, top_comment,
-                top_comment_author, duration, watched_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (video_id, title, channel, url, description, top_comment,
-             top_comment_author, duration, watched_at),
-        )
-        row_id = cur.lastrowid
-        conn.commit()
-        conn.close()
-        return row_id
-
-    # --- Login status ---
+    # --- Login status (core.db) ---
 
     def get_login_status(self) -> str:
-        """Get login status for this source."""
-        conn = get_connection(self.db_path)
-        row = conn.execute(
-            "SELECT login_status FROM sources WHERE name = ?", (self.source,)
-        ).fetchone()
-        conn.close()
-        return row["login_status"] if row else "unknown"
+        """Get login status from core.db."""
+        from .core_db import get_skill_info
+        info = get_skill_info(self.skill_name, self.core_db_path)
+        return info["login_status"] if info else "unknown"
 
     def set_login_status(self, status: str):
-        """Update login status (logged_in, not_logged_in, unknown)."""
-        conn = get_connection(self.db_path)
-        conn.execute(
-            "UPDATE sources SET login_status = ? WHERE name = ?",
-            (status, self.source),
+        """Update login status in core.db."""
+        update_skill_login_status(self.skill_name, status, self.core_db_path)
+
+    # --- Notifications (core.db) ---
+
+    def notify(self, title: str, message: str, level: str = "info",
+               link_to: str | None = None):
+        """Push a notification to the dashboard."""
+        add_notification(
+            self.skill_name, title, message, level, link_to,
+            self.core_db_path,
         )
-        conn.commit()
-        conn.close()
+
+    # --- Data queries (skill's own DB via self.conn) ---
+    # These are generic helpers. Skills can also use self.conn directly.
+
+    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Execute SQL on the skill's own DB."""
+        return self.conn.execute(sql, params)
+
+    def fetchone(self, sql: str, params: tuple = ()) -> dict | None:
+        """Execute and fetch one row from skill's DB."""
+        row = self.conn.execute(sql, params).fetchone()
+        return dict(row) if row else None
+
+    def fetchall(self, sql: str, params: tuple = ()) -> list[dict]:
+        """Execute and fetch all rows from skill's DB."""
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def commit(self):
+        """Commit changes to skill's DB."""
+        self.conn.commit()
+
+    def item_count(self, table: str) -> int:
+        """Count rows in a table in skill's DB."""
+        row = self.conn.execute(f"SELECT COUNT(*) as cnt FROM {table}").fetchone()
+        return row["cnt"] if row else 0

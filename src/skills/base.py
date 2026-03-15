@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from ..cdp_client import CDPTab, CDPClient
-from ..db.models import add_alert, get_connection
+from ..db.core_db import add_alert, add_notification, get_core_connection, CORE_DB_PATH
+from ..db.skill_db import SkillDBManager
 from ..db.sync_tracker import SyncTracker
 
 logger = logging.getLogger("memory_tap.skill")
@@ -153,6 +154,8 @@ class BaseSkill(ABC):
 
     Subclasses MUST implement:
     - manifest: SkillManifest property
+    - create_schema(conn): create tables in skill's own DB
+    - get_search_results(conn, query, limit): return search results
     - check_login(tab): verify user is logged in
     - collect(tab, tracker, limits): navigate + collect data
     - stop_strategy: which StopStrategy this skill uses
@@ -177,6 +180,24 @@ class BaseSkill(ABC):
 
         Navigate to target_url and check for login indicators.
         Return True if logged in, False if not.
+        """
+        ...
+
+    @abstractmethod
+    def create_schema(self, conn) -> None:
+        """Create tables and indexes in this skill's own DB.
+
+        Called once when the skill is first installed.
+        conn is a sqlite3.Connection to skill_data/{name}.db.
+        """
+        ...
+
+    @abstractmethod
+    def get_search_results(self, conn, query: str, limit: int = 20) -> list[dict]:
+        """Search this skill's data. Called by dashboard for cross-skill search.
+
+        Each result must have: type, title, snippet, url (optional), date (optional).
+        conn is a sqlite3.Connection to this skill's DB.
         """
         ...
 
@@ -263,23 +284,6 @@ class BaseSkill(ABC):
         return self.manifest.login_url or self.manifest.target_url
 
     @staticmethod
-    def _get_previous_item_count(skill_name: str, db_path: str | None = None) -> int:
-        """Check how many items this skill collected in previous runs."""
-        conn = get_connection(db_path)
-        # Check conversations
-        row = conn.execute(
-            "SELECT COUNT(*) as c FROM conversations WHERE source = ?", (skill_name,)
-        ).fetchone()
-        conv_count = row["c"] if row else 0
-        # Check videos (for youtube)
-        vid_count = 0
-        if "youtube" in skill_name:
-            row = conn.execute("SELECT COUNT(*) as c FROM youtube_videos").fetchone()
-            vid_count = row["c"] if row else 0
-        conn.close()
-        return conv_count + vid_count
-
-    @staticmethod
     def _save_error_screenshot(tab: CDPTab, skill_name: str) -> str | None:
         """Take a screenshot on error/warning for debugging."""
         try:
@@ -320,23 +324,36 @@ class BaseSkill(ABC):
         params = urllib.parse.urlencode({"title": title, "body": body})
         return f"https://github.com/vysakhrnambiar/memory-tap-skills/issues/new?{params}"
 
-    def run(self, client: CDPClient, db_path: str | None = None) -> CollectResult:
-        """Full skill execution: get/create persistent tab → check login → collect.
+    def run(self, client: CDPClient,
+            skill_db_mgr: SkillDBManager,
+            core_db_path: str | None = None) -> CollectResult:
+        """Full skill execution: ensure DB → get tab → check login → collect.
 
-        Uses persistent tabs that survive between runs. Tabs are kept open
-        in Chrome — only the WebSocket connection is released after each run.
+        Architecture:
+        - Skill's own DB (via skill_db_mgr) for skill data
+        - core.db for sync_log, login_status, notifications, tabs
+        - Persistent tabs survive between runs
         """
         m = self.manifest
-        tracker = SyncTracker(m.name, db_path)
+        core_path = core_db_path or CORE_DB_PATH
+
+        # Ensure skill DB schema exists
+        skill_db_mgr.ensure_schema(self)
+
+        # Get skill DB connection
+        skill_conn = skill_db_mgr.get_connection(m.name)
+
+        # Create tracker with split connections
+        tracker = SyncTracker(m.name, skill_conn, core_path)
         log_id = tracker.start_sync()
 
         tab = None
         try:
-            # Get or create persistent tab for this skill
-            tab = client.get_or_create_tab(m.name, m.target_url, db_path=db_path)
+            # Get or create persistent tab
+            tab = client.get_or_create_tab(m.name, m.target_url, db_path=core_path)
             tab.set_working()
 
-            # Navigate to target URL (tab may be on a different page from last run)
+            # Navigate to target URL if needed
             current_url = tab.get_url()
             if m.target_url not in current_url:
                 tab.navigate(m.target_url)
@@ -345,7 +362,7 @@ class BaseSkill(ABC):
             if not self.check_login(tab):
                 screenshot_path = self._save_error_screenshot(tab, f"{m.name}_login_fail")
                 tracker.set_login_status("not_logged_in")
-                client.save_tab_state(m.name, tab, login_verified=False, db_path=db_path)
+                client.save_tab_state(m.name, tab, login_verified=False, db_path=core_path)
                 error_msg = (
                     f"Not logged in to {m.name}. "
                     f"Please open the dashboard and sign into {m.target_url}"
@@ -357,11 +374,10 @@ class BaseSkill(ABC):
                 return result
 
             tracker.set_login_status("logged_in")
-            client.save_tab_state(m.name, tab, login_verified=True, db_path=db_path)
+            client.save_tab_state(m.name, tab, login_verified=True, db_path=core_path)
 
             # Create run limits
-            is_first_run = tracker.get_login_status() != "logged_in" or \
-                not self._get_previous_item_count(m.name, db_path)
+            is_first_run = tracker.item_count(self._main_table_name()) == 0
             limits = self.create_run_limits(is_first_run)
             logger.info("Skill %s: %s run, limits: max_items=%d, max_min=%.0f",
                         m.name, "first" if is_first_run else "subsequent",
@@ -378,6 +394,8 @@ class BaseSkill(ABC):
 
             tracker.finish_sync(
                 result.items_found, result.items_new, result.items_updated,
+                elapsed_minutes=limits.elapsed_minutes,
+                stop_reason=limits.stop_reason or "completed",
                 error=result.error,
             )
             logger.info(
@@ -387,30 +405,30 @@ class BaseSkill(ABC):
                 limits.stop_reason or "completed",
             )
 
-            # Zero-items warning: if logged in but found nothing, and we had data before
+            # Zero-items warning
             if result.items_found == 0 and result.success:
-                prev_count = self._get_previous_item_count(m.name, db_path)
+                prev_count = tracker.item_count(self._main_table_name())
                 if prev_count > 0:
-                    # Possible site change — take screenshot and alert
                     screenshot_path = self._save_error_screenshot(tab, m.name)
                     github_url = self._build_github_issue_url(m, prev_count, screenshot_path)
                     add_alert(
                         f"{m.name}: No data found",
                         f"Previously had {prev_count} items, now found 0. "
-                        f"The website may have changed its layout. "
-                        f"Please report this issue.",
-                        level="warning",
-                        source=m.name,
-                        db_path=db_path,
+                        f"The website may have changed its layout.",
+                        level="warning", source=m.name, db_path=core_path,
                     )
                     result.details["zero_items_warning"] = True
                     result.details["previous_count"] = prev_count
                     result.details["github_issue_url"] = github_url
                     result.details["screenshot"] = screenshot_path
-                    logger.warning(
-                        "Skill %s: ZERO items found but previously had %d — possible site change",
-                        m.name, prev_count,
-                    )
+
+            # Notify on successful collection
+            if result.items_new > 0:
+                tracker.notify(
+                    f"Collected {result.items_new} new items",
+                    f"{m.name}: {result.items_found} found, {result.items_new} new",
+                    link_to=f"/skill/{m.name}",
+                )
 
             return result
 
@@ -429,7 +447,18 @@ class BaseSkill(ABC):
             if tab:
                 try:
                     tab.set_idle()
-                    # Release WS connection but keep tab open in Chrome
-                    client.release_tab(m.name, tab, db_path=db_path)
+                    client.release_tab(m.name, tab, db_path=core_path)
                 except Exception:
                     pass
+            # Close skill DB connection
+            try:
+                skill_conn.close()
+            except Exception:
+                pass
+
+    def _main_table_name(self) -> str:
+        """Return the main data table name for item counting.
+
+        Override in subclass if different. Default: 'items'.
+        """
+        return "items"

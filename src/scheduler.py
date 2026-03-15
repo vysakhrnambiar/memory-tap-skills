@@ -14,7 +14,8 @@ from datetime import datetime, timedelta
 
 from .cdp_client import CDPClient
 from .chrome_manager import ChromeManager, HealthMonitor
-from .db.models import get_connection, init_db
+from .db.core_db import get_core_connection, get_skill_info, register_skill, CORE_DB_PATH
+from .db.skill_db import SkillDBManager
 from .skills.base import BaseSkill
 
 logger = logging.getLogger("memory_tap.scheduler")
@@ -23,9 +24,10 @@ logger = logging.getLogger("memory_tap.scheduler")
 class SkillScheduler:
     """Manages periodic execution of collection skills."""
 
-    def __init__(self, chrome: ChromeManager, db_path: str | None = None):
+    def __init__(self, chrome: ChromeManager, core_db_path: str | None = None):
         self.chrome = chrome
-        self.db_path = db_path
+        self.core_db_path = core_db_path or CORE_DB_PATH
+        self.skill_db_mgr = SkillDBManager(core_db_path=self.core_db_path)
         self.health = HealthMonitor(chrome)
         self._skills: dict[str, BaseSkill] = {}
         self._thread: threading.Thread | None = None
@@ -37,15 +39,8 @@ class SkillScheduler:
         m = skill.manifest
         self._skills[m.name] = skill
 
-        # Ensure source record exists in DB
-        conn = get_connection(self.db_path)
-        conn.execute(
-            """INSERT OR IGNORE INTO sources (name, skill_version, target_url, schedule_hours)
-               VALUES (?, ?, ?, ?)""",
-            (m.name, m.version, m.target_url, m.schedule_hours),
-        )
-        conn.commit()
-        conn.close()
+        # Ensure skill DB + schema exists, register in core.db
+        self.skill_db_mgr.ensure_schema(skill)
         logger.info("Registered skill: %s v%s (every %dh)", m.name, m.version, m.schedule_hours)
 
     def load_skills_from_dir(self, skills_dir: str):
@@ -101,9 +96,9 @@ class SkillScheduler:
 
     def _should_run(self, skill_name: str) -> bool:
         """Check if a skill is due to run based on its schedule."""
-        conn = get_connection(self.db_path)
+        conn = get_core_connection(self.core_db_path)
         row = conn.execute(
-            "SELECT enabled, last_sync_at, schedule_hours, login_status FROM sources WHERE name = ?",
+            "SELECT enabled, last_sync_at, schedule_hours, login_status FROM skill_registry WHERE name = ?",
             (skill_name,),
         ).fetchone()
         conn.close()
@@ -148,7 +143,9 @@ class SkillScheduler:
         def _run_skill():
             try:
                 with CDPClient() as client:
-                    result_holder[0] = skill.run(client, self.db_path)
+                    result_holder[0] = skill.run(
+                        client, self.skill_db_mgr, self.core_db_path
+                    )
             except Exception as e:
                 error_holder[0] = str(e)
 
@@ -158,11 +155,11 @@ class SkillScheduler:
 
         if run_thread.is_alive():
             logger.error("Skill %s HARD KILLED after %d minutes", skill_name, HARD_KILL_MINUTES)
-            from .db.models import add_alert
+            from .db.core_db import add_alert
             add_alert(
                 f"{skill_name}: Hard Kill",
                 f"Skill ran for over {HARD_KILL_MINUTES} minutes and was forcefully stopped.",
-                level="error", source=skill_name, db_path=self.db_path,
+                level="error", source=skill_name, db_path=self.core_db_path,
             )
             return {
                 "skill": skill_name, "success": False, "items_found": 0,

@@ -19,9 +19,9 @@ import requests
 import websocket
 
 from .chrome_manager import get_active_port
-from .db.models import (
-    add_alert, get_skill_tabs, upsert_skill_tab, update_tab_url,
-    clear_skill_tabs, get_all_registered_tabs, count_active_skills,
+from .db.core_db import (
+    add_alert, get_skill_tabs, upsert_skill_tab,
+    get_all_registered_tabs, count_active_skills,
 )
 
 logger = logging.getLogger("memory_tap.cdp")
