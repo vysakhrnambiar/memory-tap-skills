@@ -6,747 +6,659 @@
     <title>Memory Tap</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f0f0f; color: #e0e0e0; line-height: 1.6;
-        }
-        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; line-height: 1.6; }
+        a { color: #7c3aed; text-decoration: none; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
         /* Header */
-        header {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 20px 0; border-bottom: 1px solid #2a2a2a; margin-bottom: 30px;
-        }
-        header h1 { font-size: 24px; font-weight: 600; }
+        header { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; border-bottom: 1px solid #2a2a2a; margin-bottom: 24px; }
+        header h1 { font-size: 22px; font-weight: 600; cursor: pointer; }
         header h1 span { color: #7c3aed; }
+        .header-right { display: flex; align-items: center; gap: 16px; }
+        .nav-btn { padding: 6px 14px; border: 1px solid #333; border-radius: 6px; background: none; color: #ccc; cursor: pointer; font-size: 13px; }
+        .nav-btn:hover { background: #1a1a1a; }
+        .nav-btn.active { border-color: #7c3aed; color: #7c3aed; }
 
-        /* Nav tabs */
-        .tabs {
-            display: flex; gap: 4px; margin-bottom: 30px;
-            border-bottom: 1px solid #2a2a2a; padding-bottom: 0;
-        }
-        .tab {
-            padding: 10px 20px; cursor: pointer; border: none; background: none;
-            color: #888; font-size: 14px; border-bottom: 2px solid transparent;
-            transition: all 0.2s;
-        }
-        .tab:hover { color: #ccc; }
-        .tab.active { color: #7c3aed; border-bottom-color: #7c3aed; }
+        /* Notification bell */
+        .bell { position: relative; cursor: pointer; font-size: 18px; padding: 4px 8px; }
+        .bell-badge { position: absolute; top: -2px; right: -2px; background: #ef4444; color: white; font-size: 10px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+        .notif-dropdown { display: none; position: absolute; right: 0; top: 36px; width: 350px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; z-index: 100; max-height: 400px; overflow-y: auto; }
+        .notif-dropdown.show { display: block; }
+        .notif-item { padding: 10px 14px; border-bottom: 1px solid #222; cursor: pointer; }
+        .notif-item:hover { background: #222; }
+        .notif-item .level { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+        .notif-item .level.info { background: #3b82f6; }
+        .notif-item .level.warning { background: #eab308; }
+        .notif-item .level.error { background: #ef4444; }
+        .notif-item .title { font-size: 13px; font-weight: 500; }
+        .notif-item .meta { font-size: 11px; color: #666; margin-top: 2px; }
+        .notif-header { padding: 10px 14px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 
-        /* Panels */
-        .panel { display: none; }
-        .panel.active { display: block; }
-
-        /* Stats bar */
-        .stats-bar {
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
-            margin-bottom: 30px;
-        }
-        .stat-card {
-            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
-            padding: 16px; text-align: center;
-        }
+        /* Cards */
+        .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+        .stat-card { text-align: center; padding: 16px; }
         .stat-card .number { font-size: 28px; font-weight: 700; color: #7c3aed; }
         .stat-card .label { font-size: 12px; color: #888; text-transform: uppercase; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; margin-bottom: 20px; }
+
+        /* Widget grid */
+        .widget-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+        .widget { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px; cursor: pointer; transition: border-color 0.2s; min-height: 120px; }
+        .widget:hover { border-color: #7c3aed44; }
+        .widget-title { font-size: 13px; color: #888; margin-bottom: 8px; font-weight: 500; }
+        .widget.small { grid-column: span 1; }
+        .widget.medium { grid-column: span 1; }
+        .widget.large { grid-column: span 2; grid-row: span 2; }
+        .widget.wide { grid-column: span 3; }
 
         /* Timeline */
-        .timeline-day {
-            margin-bottom: 24px; border-left: 2px solid #2a2a2a; padding-left: 20px;
-        }
-        .timeline-date {
-            font-size: 14px; font-weight: 600; color: #7c3aed; margin-bottom: 12px;
-            position: relative;
-        }
-        .timeline-date::before {
-            content: ''; position: absolute; left: -25px; top: 4px;
-            width: 10px; height: 10px; border-radius: 50%;
-            background: #7c3aed; border: 2px solid #0f0f0f;
-        }
-        .timeline-item {
-            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
-            padding: 12px 16px; margin-bottom: 8px;
-        }
-        .timeline-item .source-badge {
-            display: inline-block; padding: 2px 8px; border-radius: 4px;
-            font-size: 11px; font-weight: 600; margin-right: 8px;
-        }
-        .badge-chatgpt { background: #10a37f22; color: #10a37f; }
-        .badge-gemini { background: #4285f422; color: #4285f4; }
-        .badge-youtube { background: #ff000022; color: #ff4444; }
-        .badge-sync { background: #7c3aed22; color: #7c3aed; }
-        .timeline-item .title { font-weight: 500; }
-        .timeline-item .meta { font-size: 12px; color: #666; margin-top: 4px; }
+        .timeline-group { margin-bottom: 20px; }
+        .timeline-date { font-size: 13px; font-weight: 600; color: #7c3aed; margin-bottom: 8px; padding-left: 12px; border-left: 2px solid #7c3aed; }
+        .timeline-item { padding: 8px 12px; border-bottom: 1px solid #1a1a1a; font-size: 13px; }
+        .timeline-item .item-title { font-weight: 500; }
+        .timeline-item .item-meta { color: #666; font-size: 12px; }
 
-        /* Sources */
-        .source-card {
-            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
-            padding: 16px; margin-bottom: 12px;
-            display: flex; justify-content: space-between; align-items: center;
-        }
-        .source-info h3 { font-size: 16px; }
-        .source-info .status { font-size: 12px; margin-top: 4px; }
+        /* Progress list */
+        .progress-item { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #1a1a1a; }
+        .progress-bar-bg { flex: 0 0 80px; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
+        .progress-bar-fill { height: 100%; background: #7c3aed; border-radius: 3px; }
+        .progress-item .pct { font-size: 12px; color: #888; width: 35px; }
+        .progress-item .item-title { font-size: 13px; flex: 1; }
+
+        /* Grid (for shorts, images) */
+        .thumb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+        .thumb-item { background: #222; border-radius: 6px; padding: 8px; font-size: 12px; }
+
+        /* Table */
+        .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .data-table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #333; color: #888; font-weight: 500; }
+        .data-table td { padding: 8px 12px; border-bottom: 1px solid #1a1a1a; }
+
+        /* Conversation */
+        .conv-msg { padding: 10px 14px; margin-bottom: 8px; border-radius: 8px; font-size: 13px; }
+        .conv-msg.user { background: #1a1a2e; margin-left: 40px; }
+        .conv-msg.assistant { background: #1a1a1a; margin-right: 40px; }
+        .conv-msg .role { font-size: 11px; color: #888; margin-bottom: 4px; font-weight: 600; }
+
+        /* Search */
+        .search-box { display: flex; gap: 8px; margin-bottom: 16px; }
+        .search-box input { flex: 1; padding: 10px 14px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #e0e0e0; font-size: 14px; }
+        .search-result { padding: 10px 14px; border-bottom: 1px solid #1a1a1a; }
+        .search-result .sr-title { font-weight: 500; font-size: 14px; }
+        .search-result .sr-snippet { font-size: 12px; color: #888; margin-top: 2px; }
+
+        /* Buttons */
+        .btn { padding: 6px 14px; border: 1px solid #333; border-radius: 6px; background: #1a1a1a; color: #e0e0e0; cursor: pointer; font-size: 13px; }
+        .btn:hover { background: #2a2a2a; }
+        .btn.primary { background: #7c3aed; border-color: #7c3aed; color: white; }
+        .btn.primary:hover { background: #6d28d9; }
+
+        /* Section */
+        .section { margin-bottom: 24px; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; cursor: pointer; }
+        .section-header h3 { font-size: 16px; }
+        .section-header .toggle { color: #666; }
+        .section-content.collapsed { display: none; }
+
+        /* Skill page back */
+        .back-btn { display: inline-flex; align-items: center; gap: 6px; color: #888; font-size: 13px; cursor: pointer; margin-bottom: 16px; }
+        .back-btn:hover { color: #e0e0e0; }
+
+        /* Settings */
+        .setting-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid #1a1a1a; }
+        .setting-row label { width: 150px; font-size: 14px; color: #888; }
+        .setting-row input, .setting-row select { flex: 1; padding: 8px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; color: #e0e0e0; font-size: 14px; }
+
+        /* Skill card (settings) */
+        .skill-card { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; margin-bottom: 8px; }
+        .skill-info h4 { font-size: 14px; }
+        .skill-info .skill-meta { font-size: 12px; color: #888; margin-top: 2px; }
         .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
         .status-dot.green { background: #22c55e; }
         .status-dot.red { background: #ef4444; }
         .status-dot.yellow { background: #eab308; }
-        .source-actions { display: flex; gap: 8px; }
-
-        /* Buttons */
-        .btn {
-            padding: 6px 14px; border: 1px solid #333; border-radius: 6px;
-            background: #1a1a1a; color: #e0e0e0; cursor: pointer; font-size: 13px;
-            transition: all 0.2s;
-        }
-        .btn:hover { background: #2a2a2a; }
-        .btn.primary { background: #7c3aed; border-color: #7c3aed; color: white; }
-        .btn.primary:hover { background: #6d28d9; }
-        .btn.danger { border-color: #ef4444; color: #ef4444; }
-
-        /* Settings */
-        .setting-row {
-            display: flex; align-items: center; gap: 16px;
-            padding: 12px 0; border-bottom: 1px solid #1a1a1a;
-        }
-        .setting-row label { width: 150px; font-size: 14px; color: #888; }
-        .setting-row input, .setting-row select {
-            flex: 1; padding: 8px 12px; background: #1a1a1a; border: 1px solid #333;
-            border-radius: 6px; color: #e0e0e0; font-size: 14px;
-        }
-
-        /* Search */
-        .search-bar {
-            display: flex; gap: 8px; margin-bottom: 20px;
-        }
-        .search-bar input {
-            flex: 1; padding: 10px 16px; background: #1a1a1a; border: 1px solid #333;
-            border-radius: 8px; color: #e0e0e0; font-size: 14px;
-        }
-        .search-result {
-            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
-            padding: 12px 16px; margin-bottom: 8px;
-        }
-        .search-result .snippet { color: #aaa; font-size: 13px; margin-top: 4px; }
-
-        /* Loading */
-        .loading { text-align: center; padding: 40px; color: #666; }
-
-        /* Alerts */
-        .alerts-container { margin-bottom: 16px; }
-        .alert-card {
-            padding: 12px 16px; border-radius: 8px; margin-bottom: 8px;
-            display: flex; justify-content: space-between; align-items: center;
-        }
-        .alert-card.error { background: #ef444422; border: 1px solid #ef444444; }
-        .alert-card.warning { background: #eab30822; border: 1px solid #eab30844; }
-        .alert-card.info { background: #3b82f622; border: 1px solid #3b82f644; }
-        .alert-card .alert-text h4 { font-size: 14px; margin-bottom: 2px; }
-        .alert-card .alert-text p { font-size: 12px; color: #999; }
-        .alert-card .alert-dismiss { cursor: pointer; color: #666; font-size: 18px; padding: 4px 8px; }
-        .alert-card .alert-dismiss:hover { color: #fff; }
-
-        /* Sign-in banner */
-        .signin-banner {
-            background: linear-gradient(135deg, #7c3aed22, #4f46e522);
-            border: 1px solid #7c3aed44; border-radius: 12px;
-            padding: 24px 32px; margin-bottom: 24px; text-align: center;
-        }
-        .signin-banner h2 { font-size: 20px; margin-bottom: 8px; color: #e0e0e0; }
-        .signin-banner p { color: #999; font-size: 14px; margin-bottom: 16px; }
-        .signin-banner .btn { font-size: 15px; padding: 10px 24px; }
-
-        /* Sign-in wizard */
-        .wizard { margin-bottom: 24px; }
-        .wizard-step {
-            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px;
-            padding: 20px 24px; margin-bottom: 12px;
-            display: flex; align-items: center; gap: 16px;
-        }
-        .wizard-step.completed { border-color: #22c55e44; }
-        .wizard-step.active { border-color: #7c3aed; }
-        .wizard-step.pending { opacity: 0.5; }
-        .wizard-step-num {
-            width: 36px; height: 36px; border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            font-weight: 700; font-size: 16px; flex-shrink: 0;
-        }
-        .wizard-step.completed .wizard-step-num { background: #22c55e33; color: #22c55e; }
-        .wizard-step.active .wizard-step-num { background: #7c3aed33; color: #7c3aed; }
-        .wizard-step.pending .wizard-step-num { background: #33333366; color: #666; }
-        .wizard-step-content { flex: 1; }
-        .wizard-step-content h3 { font-size: 15px; margin-bottom: 4px; }
-        .wizard-step-content p { font-size: 13px; color: #888; }
-        .wizard-step-content .skills-covered { font-size: 12px; color: #666; margin-top: 4px; }
 
         /* Indemnity overlay */
-        .indemnity-overlay {
-            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.95); z-index: 1000;
-            display: flex; align-items: center; justify-content: center;
-        }
-        .indemnity-box {
-            background: #1a1a1a; border: 1px solid #333; border-radius: 12px;
-            max-width: 640px; width: 90%; max-height: 90vh; overflow-y: auto;
-            padding: 32px;
-        }
-        .indemnity-box h2 { font-size: 22px; margin-bottom: 16px; color: #7c3aed; }
-        .indemnity-box h3 { font-size: 16px; margin: 16px 0 8px; color: #ccc; }
-        .indemnity-box p, .indemnity-box li { font-size: 14px; color: #999; line-height: 1.7; }
-        .indemnity-box ul { padding-left: 20px; margin-bottom: 12px; }
-        .indemnity-box .highlight { color: #e0e0e0; font-weight: 500; }
-        .indemnity-box .accept-section {
-            margin-top: 24px; padding-top: 20px; border-top: 1px solid #333;
-            text-align: center;
-        }
-        .indemnity-box .checkbox-row {
-            display: flex; align-items: flex-start; gap: 10px;
-            margin-bottom: 16px; text-align: left;
-        }
-        .indemnity-box .checkbox-row input { margin-top: 4px; }
-        .indemnity-box .checkbox-row label { font-size: 13px; color: #ccc; }
+        .overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.95); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+        .overlay-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; max-width: 640px; width: 90%; max-height: 90vh; overflow-y: auto; padding: 32px; }
+        .overlay-box h2 { font-size: 22px; margin-bottom: 16px; color: #7c3aed; }
+        .overlay-box h3 { font-size: 16px; margin: 16px 0 8px; color: #ccc; }
+        .overlay-box p, .overlay-box li { font-size: 14px; color: #999; line-height: 1.7; }
+        .overlay-box ul { padding-left: 20px; margin-bottom: 12px; }
+        .overlay-box .hl { color: #e0e0e0; font-weight: 500; }
+        .checkbox-row { display: flex; align-items: flex-start; gap: 10px; margin: 20px 0 16px; }
+        .checkbox-row input { margin-top: 4px; }
+        .checkbox-row label { font-size: 13px; color: #ccc; }
+
+        /* Wizard */
+        .wizard-step { display: flex; align-items: center; gap: 16px; padding: 14px 16px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; margin-bottom: 8px; }
+        .wizard-step.done { border-color: #22c55e44; }
+        .wizard-step .step-num { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
+        .wizard-step.done .step-num { background: #22c55e33; color: #22c55e; }
+        .wizard-step:not(.done) .step-num { background: #7c3aed33; color: #7c3aed; }
+        .wizard-step .step-info { flex: 1; }
+        .wizard-step .step-info h4 { font-size: 14px; }
+        .wizard-step .step-info p { font-size: 12px; color: #888; }
+
+        .loading { text-align: center; padding: 40px; color: #666; }
+        .empty { text-align: center; padding: 30px; color: #555; font-size: 14px; }
     </style>
 </head>
 <body>
-    <!-- Indemnity / Risk Acknowledgment (blocks everything until accepted) -->
-    <div id="indemnity-overlay" class="indemnity-overlay" style="display:none">
-        <div class="indemnity-box">
+    <!-- Indemnity Overlay -->
+    <div id="indemnity" class="overlay" style="display:none">
+        <div class="overlay-box">
             <h2>Welcome to Memory Tap</h2>
             <p>Before you begin, please read and understand what this application does.</p>
-
             <h3>What Memory Tap Does</h3>
-            <p>Memory Tap is a personal knowledge collector that runs on your computer. It connects to a
-            <span class="highlight">separate, isolated Chrome browser</span> (not your main browser) and
-            navigates websites you use — such as YouTube, ChatGPT, and Google Gemini — to collect your
-            conversation history, watch history, and related data into a
-            <span class="highlight">local database on your machine</span>.</p>
-
+            <p>Memory Tap connects to a <span class="hl">separate, isolated Chrome browser</span> and navigates websites you use — such as YouTube, ChatGPT, and Google Gemini — to collect your conversation history and watch history into a <span class="hl">local database on your machine</span>.</p>
             <h3>How It Works</h3>
             <ul>
-                <li>Memory Tap launches its own Chrome instance with a <span class="highlight">separate profile</span> — it never touches your main browser, bookmarks, or other data.</li>
-                <li>You will be asked to <span class="highlight">sign into your accounts</span> (Google, ChatGPT, etc.) inside this isolated Chrome. This gives Memory Tap access to your session cookies and browsing data within that profile.</li>
-                <li>A Python program controls this Chrome browser using the <span class="highlight">Chrome DevTools Protocol (CDP)</span> — the same technology used by browser developer tools. It navigates pages, scrolls, and reads page content, mimicking human browsing behavior.</li>
-                <li>Collection runs periodically in the background (every few hours by default). The program opens pages, reads your history, and saves it locally.</li>
+                <li>Launches its own Chrome instance with a <span class="hl">separate profile</span> — never touches your main browser.</li>
+                <li>You sign into your accounts inside this isolated Chrome, giving Memory Tap access to your session cookies.</li>
+                <li>A Python program controls this Chrome using the <span class="hl">Chrome DevTools Protocol (CDP)</span>, navigating pages and reading content like a human.</li>
+                <li>Collection runs periodically in the background (every few hours).</li>
             </ul>
-
             <h3>Your Data</h3>
             <ul>
-                <li><span class="highlight">All collected data stays on your machine</span> — in a SQLite database stored in your local AppData folder. Nothing is uploaded to any server.</li>
-                <li>No analytics, telemetry, or tracking of any kind is performed.</li>
-                <li>The only network requests Memory Tap makes are: (1) to the websites you authorize it to collect from, and (2) to check for skill updates from our GitHub repository.</li>
-                <li>If you configure the optional RAG chat feature, your search queries are sent to OpenRouter (a third-party LLM API) to generate answers. Your collected data is included as context in those requests. This feature is entirely optional and requires you to provide your own API key.</li>
+                <li><span class="hl">All data stays on your machine</span> — no uploads, no telemetry.</li>
+                <li>Optional RAG chat sends queries to OpenRouter (requires your own API key).</li>
             </ul>
-
-            <h3>Risks You Should Understand</h3>
+            <h3>Risks</h3>
             <ul>
-                <li><span class="highlight">Session access:</span> By signing into websites inside Memory Tap's Chrome, you are granting a Python program access to your authenticated sessions. This program can read anything you can see when logged into those websites.</li>
-                <li><span class="highlight">Account security:</span> While Memory Tap only reads data (it does not post, delete, or modify anything), any program with session access theoretically could. You are trusting this software to behave as described.</li>
-                <li><span class="highlight">Third-party websites:</span> Automated browsing may violate the terms of service of some websites. Use at your own discretion.</li>
-                <li><span class="highlight">Local security:</span> Your collected data is stored unencrypted on your local filesystem. Anyone with access to your computer can access this data.</li>
-                <li><span class="highlight">Open source:</span> This software is open source. You can inspect the code at <a href="https://github.com/vysakhrnambiar/memory-tap-skills" style="color:#7c3aed" target="_blank">github.com/vysakhrnambiar/memory-tap-skills</a> to verify its behavior.</li>
+                <li><span class="hl">Session access:</span> You are granting a Python program access to your authenticated sessions.</li>
+                <li><span class="hl">Terms of service:</span> Automated browsing may violate some websites' ToS.</li>
+                <li><span class="hl">Local security:</span> Data is stored unencrypted on your filesystem.</li>
+                <li>This software is <a href="https://github.com/vysakhrnambiar/memory-tap-skills" target="_blank">open source</a>.</li>
             </ul>
-
-            <div class="accept-section">
-                <div class="checkbox-row">
-                    <input type="checkbox" id="accept-checkbox" />
-                    <label for="accept-checkbox">
-                        I have read and understand the above. I acknowledge that Memory Tap will access my
-                        authenticated browser sessions to read my conversation and browsing history. I understand
-                        that all data is stored locally and that I am using this software at my own risk.
-                        I accept full responsibility for my use of this application.
-                    </label>
-                </div>
-                <button class="btn primary" id="accept-btn" disabled onclick="acceptIndemnity()" style="font-size:15px;padding:12px 32px">
-                    I Understand &amp; Accept
-                </button>
+            <div class="checkbox-row">
+                <input type="checkbox" id="consent-cb" onchange="document.getElementById('consent-btn').disabled=!this.checked">
+                <label for="consent-cb">I have read and understand the above. I acknowledge that Memory Tap will access my authenticated browser sessions. All data stays local. I use this at my own risk.</label>
+            </div>
+            <div style="text-align:center">
+                <button class="btn primary" id="consent-btn" disabled onclick="acceptConsent()" style="font-size:15px;padding:12px 32px">I Understand &amp; Accept</button>
             </div>
         </div>
     </div>
 
     <div class="container">
         <header>
-            <h1><span>Memory</span> Tap</h1>
-            <span id="status-text" style="font-size:12px;color:#666">Starting...</span>
+            <h1 onclick="navigate('home')"><span>Memory</span> Tap</h1>
+            <div class="header-right">
+                <button class="nav-btn" id="nav-home" onclick="navigate('home')">Home</button>
+                <button class="nav-btn" id="nav-settings" onclick="navigate('settings')">Settings</button>
+                <div class="bell" onclick="toggleNotifs()">
+                    <span>&#128276;</span>
+                    <div class="bell-badge" id="notif-badge" style="display:none">0</div>
+                    <div class="notif-dropdown" id="notif-dropdown">
+                        <div class="notif-header"><span>Notifications</span><span style="cursor:pointer;color:#7c3aed" onclick="readAllNotifs(event)">Mark all read</span></div>
+                        <div id="notif-list"></div>
+                    </div>
+                </div>
+            </div>
         </header>
 
-        <div class="tabs">
-            <button class="tab active" data-tab="timeline">Timeline</button>
-            <button class="tab" data-tab="sources">Sources</button>
-            <button class="tab" data-tab="search">Search</button>
-            <button class="tab" data-tab="settings">Settings</button>
-        </div>
-
-        <!-- Alerts -->
-        <div id="alerts-container" class="alerts-container"></div>
-
-        <!-- Sign-in wizard (shown when setup not complete) -->
-        <div id="signin-wizard" class="wizard" style="display:none">
-            <div class="signin-banner" style="margin-bottom:16px">
-                <h2>Set Up Your Sources</h2>
-                <p>Sign into the services you want Memory Tap to collect from.<br>
-                Each sign-in happens in the isolated Memory Tap Chrome — not your main browser.</p>
-            </div>
-            <div id="wizard-steps"></div>
-        </div>
-
-        <!-- Timeline Panel -->
-        <div id="timeline" class="panel active">
-            <div class="stats-bar" id="stats-bar"></div>
-            <div id="timeline-content"><div class="loading">Loading timeline...</div></div>
-        </div>
-
-        <!-- Sources Panel -->
-        <div id="sources" class="panel">
-            <div id="sources-list"><div class="loading">Loading sources...</div></div>
-        </div>
-
-        <!-- Search Panel -->
-        <div id="search" class="panel">
-            <div class="search-bar">
-                <input type="text" id="search-input" placeholder="Search your collected data..." />
-                <button class="btn primary" onclick="doSearch()">Search</button>
-            </div>
-            <div id="search-results"></div>
-        </div>
-
-        <!-- Settings Panel -->
-        <div id="settings" class="panel">
-            <h2 style="margin-bottom:20px;font-size:18px">Settings</h2>
-            <div class="setting-row">
-                <label>LLM Provider</label>
-                <select id="llm-provider">
-                    <option value="gemini-2.5-flash">Gemini 2.5 Flash (OpenRouter)</option>
-                </select>
-            </div>
-            <div class="setting-row">
-                <label>OpenRouter Key</label>
-                <input type="password" id="api-key" placeholder="sk-or-..." />
-            </div>
-            <div style="margin-top:16px">
-                <button class="btn primary" onclick="saveSettings()">Save Settings</button>
-                <button class="btn" onclick="checkForUpdates()" style="margin-left:8px">Check for Skill Updates</button>
-            </div>
+        <div id="page-content">
+            <div class="loading">Loading...</div>
         </div>
     </div>
 
     <script>
-        // Tab switching
-        document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-                tab.classList.add('active');
-                document.getElementById(tab.dataset.tab).classList.add('active');
-            });
-        });
+        let currentPage = 'home';
+        let currentSkill = null;
 
-        // Indemnity checkbox enables button
-        document.getElementById('accept-checkbox').addEventListener('change', function() {
-            document.getElementById('accept-btn').disabled = !this.checked;
-        });
+        // ============================================================
+        // Navigation
+        // ============================================================
+        function navigate(page, data) {
+            currentPage = page;
+            currentSkill = data || null;
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            const navBtn = document.getElementById('nav-' + page);
+            if (navBtn) navBtn.classList.add('active');
 
-        // Check consent before showing anything
-        checkConsent();
+            if (page === 'home') renderHome();
+            else if (page === 'settings') renderSettings();
+            else if (page === 'skill') renderSkillPage(data);
+        }
 
+        // ============================================================
+        // Consent
+        // ============================================================
         async function checkConsent() {
-            try {
-                const resp = await fetch('/api/settings');
-                const data = await resp.json();
-                if (data.consent_accepted === 'yes') {
-                    document.getElementById('indemnity-overlay').style.display = 'none';
-                    loadAll();
-                } else {
-                    document.getElementById('indemnity-overlay').style.display = 'flex';
-                }
-            } catch(e) {
-                document.getElementById('indemnity-overlay').style.display = 'flex';
-            }
-        }
-
-        async function acceptIndemnity() {
-            await fetch('/api/settings', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({consent_accepted: 'yes', consent_date: new Date().toISOString()})
-            });
-            document.getElementById('indemnity-overlay').style.display = 'none';
-            loadAll();
-        }
-
-        function loadAll() {
-            loadStats();
-            loadTimeline();
-            loadSources();
-            loadSettings();
-            checkSignInStatus();
-            loadAlerts();
-        }
-
-        // Poll alerts every 15 seconds
-        setInterval(loadAlerts, 15000);
-
-        async function loadAlerts() {
-            try {
-                const resp = await fetch('/api/alerts');
-                const alerts = await resp.json();
-                const container = document.getElementById('alerts-container');
-                if (alerts.length === 0) {
-                    container.innerHTML = '';
-                    return;
-                }
-                let html = '';
-                for (const a of alerts) {
-                    html += `<div class="alert-card ${a.level}">
-                        <div class="alert-text">
-                            <h4>${esc(a.title)}</h4>
-                            <p>${esc(a.message)} &middot; ${timeAgo(a.created_at)}</p>
-                        </div>
-                        <span class="alert-dismiss" onclick="dismissAlert(${a.id})">&times;</span>
-                    </div>`;
-                }
-                container.innerHTML = html;
-            } catch(e) {}
-        }
-
-        async function dismissAlert(id) {
-            await fetch(`/api/alerts/${id}/dismiss`, { method: 'POST' });
-            loadAlerts();
-        }
-
-        async function checkSignInStatus() {
-            try {
-                const resp = await fetch('/api/auth_providers');
-                const providers = await resp.json();
-                const allDone = providers.every(p => p.all_logged_in);
-                const wizard = document.getElementById('signin-wizard');
-
-                if (allDone) {
-                    wizard.style.display = 'none';
-                    return;
-                }
-
-                // Build wizard steps
-                let html = '';
-                let stepNum = 1;
-                for (const p of providers) {
-                    const state = p.all_logged_in ? 'completed' : 'active';
-                    const icon = p.all_logged_in ? '&#10003;' : stepNum;
-                    const skillNames = p.skills.map(s => s.name.replace('_', ' ')).join(', ');
-                    const btnHtml = p.all_logged_in
-                        ? '<span style="color:#22c55e;font-size:13px">Signed in</span>'
-                        : `<button class="btn primary" onclick="wizardSignIn('${p.skills[0].name}', '${p.provider}')">Sign In</button>`;
-
-                    html += `<div class="wizard-step ${state}">
-                        <div class="wizard-step-num">${icon}</div>
-                        <div class="wizard-step-content">
-                            <h3>Sign into ${esc(p.provider.charAt(0).toUpperCase() + p.provider.slice(1))}</h3>
-                            <p>${p.all_logged_in ? 'All set!' : 'Opens in the Memory Tap Chrome window'}</p>
-                            <div class="skills-covered">Covers: ${esc(skillNames)}</div>
-                        </div>
-                        <div>${btnHtml}</div>
-                    </div>`;
-                    stepNum++;
-                }
-
-                // Final step: all done
-                if (!allDone) {
-                    html += `<div class="wizard-step pending">
-                        <div class="wizard-step-num">${stepNum}</div>
-                        <div class="wizard-step-content">
-                            <h3>Start collecting</h3>
-                            <p>Once signed in, Memory Tap will begin collecting your data automatically</p>
-                        </div>
-                    </div>`;
-                }
-
-                document.getElementById('wizard-steps').innerHTML = html;
-                wizard.style.display = 'block';
-            } catch(e) {}
-        }
-
-        async function wizardSignIn(skillName, providerName) {
-            try {
-                const resp = await fetch(`/api/sources/${skillName}/login`, { method: 'POST' });
-                const data = await resp.json();
-                if (data.url) {
-                    alert(`A Chrome window has opened to sign into ${providerName}.\n\nPlease complete the sign-in, then come back here and click "Verify Login".`);
-                }
-                // Poll: verify login status by actually checking cookies/DOM
-                let checks = 0;
-                const poll = setInterval(async () => {
-                    checks++;
-                    if (checks > 60) { clearInterval(poll); return; }
-                    // Quick login check via CDP
-                    try {
-                        const r = await fetch(`/api/sources/${skillName}/check_login`, { method: 'POST' });
-                        const result = await r.json();
-                        if (result.logged_in) {
-                            clearInterval(poll);
-                            checkSignInStatus();
-                            loadSources();
-                        }
-                    } catch(e) {}
-                }, 10000); // check every 10s
-            } catch(e) { alert('Failed to open sign-in: ' + e); }
-        }
-
-        async function checkForUpdates() {
-            const resp = await fetch('/api/skills/check_updates', { method: 'POST' });
+            const resp = await fetch('/api/settings');
             const data = await resp.json();
-            if (data.updated && data.updated.length > 0) {
-                alert('Updated skills: ' + data.updated.join(', '));
+            if (data.consent_accepted === 'yes') {
+                document.getElementById('indemnity').style.display = 'none';
+                navigate('home');
             } else {
-                alert('All skills are up to date.');
-            }
-            loadSources();
-            checkSignInStatus();
-        }
-
-        async function loadStats() {
-            try {
-                const resp = await fetch('/api/stats');
-                const data = await resp.json();
-                document.getElementById('stats-bar').innerHTML = `
-                    <div class="stat-card"><div class="number">${data.total_conversations}</div><div class="label">Conversations</div></div>
-                    <div class="stat-card"><div class="number">${data.total_messages}</div><div class="label">Messages</div></div>
-                    <div class="stat-card"><div class="number">${data.total_videos}</div><div class="label">Videos</div></div>
-                    <div class="stat-card"><div class="number">${data.total_artifacts}</div><div class="label">Artifacts</div></div>
-                `;
-                document.getElementById('status-text').textContent = `${data.sources.length} sources active`;
-                document.getElementById('status-text').style.color = '#22c55e';
-            } catch(e) {
-                document.getElementById('status-text').textContent = 'Error loading stats';
-                document.getElementById('status-text').style.color = '#ef4444';
+                document.getElementById('indemnity').style.display = 'flex';
             }
         }
 
-        async function loadTimeline() {
-            try {
-                const resp = await fetch('/api/timeline?days=14');
-                const days = await resp.json();
-                if (days.length === 0) {
-                    document.getElementById('timeline-content').innerHTML =
-                        '<div class="loading">No data collected yet. Enable some sources to get started!</div>';
-                    return;
-                }
-                let html = '';
-                for (const day of days) {
-                    html += `<div class="timeline-day"><div class="timeline-date">${formatDate(day.date)}</div>`;
-                    for (const c of day.conversations) {
-                        const badge = c.source.includes('chatgpt') ? 'chatgpt' :
-                                     c.source.includes('gemini') ? 'gemini' : 'sync';
-                        html += `<div class="timeline-item">
-                            <span class="source-badge badge-${badge}">${c.source}</span>
-                            <span class="title">${esc(c.title)}</span>
-                            <div class="meta">${c.message_count} messages</div>
-                        </div>`;
-                    }
-                    for (const v of day.videos) {
-                        html += `<div class="timeline-item">
-                            <span class="source-badge badge-youtube">YouTube</span>
-                            <span class="title">${esc(v.title)}</span>
-                            <div class="meta">${esc(v.channel || '')} ${v.watched_at ? '&middot; ' + v.watched_at : ''}</div>
-                        </div>`;
-                    }
-                    if (day.sync_runs.length > 0 && day.conversations.length === 0 && day.videos.length === 0) {
-                        for (const s of day.sync_runs) {
-                            html += `<div class="timeline-item">
-                                <span class="source-badge badge-sync">sync</span>
-                                <span class="title">${s.source}: ${s.status}</span>
-                                <div class="meta">${s.items_found} found, ${s.items_new} new${s.error ? ' &middot; Error: ' + esc(s.error) : ''}</div>
-                            </div>`;
-                        }
-                    }
-                    html += '</div>';
-                }
-                document.getElementById('timeline-content').innerHTML = html;
-            } catch(e) {
-                document.getElementById('timeline-content').innerHTML =
-                    '<div class="loading">Failed to load timeline</div>';
-            }
+        async function acceptConsent() {
+            await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({consent_accepted: 'yes', consent_date: new Date().toISOString()}) });
+            document.getElementById('indemnity').style.display = 'none';
+            navigate('home');
         }
 
-        async function loadSources() {
-            try {
-                const [sourcesResp, providersResp] = await Promise.all([
-                    fetch('/api/sources'),
-                    fetch('/api/auth_providers'),
-                ]);
-                const sources = await sourcesResp.json();
-                const providers = await providersResp.json();
+        // ============================================================
+        // Notifications
+        // ============================================================
+        function toggleNotifs() {
+            document.getElementById('notif-dropdown').classList.toggle('show');
+            event.stopPropagation();
+        }
+        document.addEventListener('click', () => document.getElementById('notif-dropdown').classList.remove('show'));
 
-                if (sources.length === 0) {
-                    document.getElementById('sources-list').innerHTML =
-                        '<div class="loading">No skills installed yet. Skills will auto-download from GitHub.</div>';
-                    return;
-                }
+        async function loadNotifs() {
+            const resp = await fetch('/api/notifications');
+            const notifs = await resp.json();
+            const badge = document.getElementById('notif-badge');
+            const unread = notifs.filter(n => !n.read).length;
+            badge.style.display = unread > 0 ? 'flex' : 'none';
+            badge.textContent = unread;
 
-                let html = '';
+            const list = document.getElementById('notif-list');
+            if (notifs.length === 0) { list.innerHTML = '<div class="empty">No notifications</div>'; return; }
+            list.innerHTML = notifs.slice(0, 10).map(n => `
+                <div class="notif-item" onclick="notifClick(${n.id}, '${esc(n.link_to || '')}')">
+                    <span class="level ${n.level}"></span>
+                    <span class="title">${esc(n.title)}</span>
+                    <div class="meta">${esc(n.skill_name)} &middot; ${timeAgo(n.created_at)}</div>
+                </div>
+            `).join('');
+        }
 
-                // Auth provider groups
-                if (providers.length > 0) {
-                    html += '<h3 style="margin-bottom:12px;font-size:15px;color:#888">Sign-In Status</h3>';
-                    for (const p of providers) {
-                        const color = p.all_logged_in ? 'green' : 'red';
-                        const skillNames = p.skills.map(s => s.name).join(', ');
-                        html += `<div class="source-card" style="margin-bottom:8px">
-                            <div class="source-info">
-                                <h3 style="text-transform:capitalize">${esc(p.provider)}</h3>
-                                <div class="status">
-                                    <span class="status-dot ${color}"></span>
-                                    ${p.all_logged_in ? 'Signed in' : 'Not signed in'}
-                                    &middot; Covers: ${esc(skillNames)}
-                                </div>
-                            </div>
-                            <div class="source-actions">
-                                ${p.all_logged_in ? '' : `<button class="btn primary" onclick="loginProvider('${p.skills[0].name}')">Sign In</button>`}
-                            </div>
-                        </div>`;
-                    }
-                    html += '<h3 style="margin:20px 0 12px;font-size:15px;color:#888">Individual Skills</h3>';
-                }
+        async function notifClick(id, link) {
+            await fetch(`/api/notifications/${id}/read`, { method: 'POST' });
+            loadNotifs();
+            if (link && link.startsWith('/skill/')) navigate('skill', link.replace('/skill/', ''));
+        }
 
-                // Individual skills
-                for (const s of sources) {
-                    const statusColor = s.login_status === 'logged_in' ? 'green' :
-                                       s.login_status === 'not_logged_in' ? 'red' : 'yellow';
-                    const lastSync = s.last_sync_at ? timeAgo(s.last_sync_at) : 'Never';
-                    html += `<div class="source-card">
-                        <div class="source-info">
-                            <h3>${esc(s.name)}</h3>
-                            <div class="status">
-                                <span class="status-dot ${statusColor}"></span>
-                                ${s.login_status} &middot; Last sync: ${lastSync}
-                                ${s.last_error ? '<br><span style="color:#ef4444">Error: ' + esc(s.last_error) + '</span>' : ''}
-                            </div>
+        async function readAllNotifs(e) {
+            e.stopPropagation();
+            await fetch('/api/notifications/read_all', { method: 'POST' });
+            loadNotifs();
+        }
+
+        // ============================================================
+        // Renderers (display types)
+        // ============================================================
+        function renderStatCards(data) {
+            return `<div class="stat-grid">${data.map(s => `<div class="card stat-card"><div class="number">${s.value}</div><div class="label">${esc(s.label)}</div></div>`).join('')}</div>`;
+        }
+
+        function renderTimeline(data) {
+            if (!data.length) return '<div class="empty">No data yet</div>';
+            // Group by date if items have a date field
+            const groups = {};
+            data.forEach(item => {
+                const date = item.watched_date || item.date || item.created_at || 'Unknown';
+                const day = date.substring(0, 10);
+                if (!groups[day]) groups[day] = [];
+                groups[day].push(item);
+            });
+            return Object.entries(groups).map(([date, items]) => `
+                <div class="timeline-group">
+                    <div class="timeline-date">${formatDate(date)}</div>
+                    ${items.map(item => `
+                        <div class="timeline-item">
+                            <div class="item-title">${esc(item.title || '')}</div>
+                            <div class="item-meta">${esc(item.channel || item.source || '')} ${item.duration ? '&middot; ' + esc(item.duration) : ''}</div>
                         </div>
-                        <div class="source-actions">
-                            <button class="btn" onclick="toggleSource('${s.name}')">${s.enabled ? 'Disable' : 'Enable'}</button>
-                            <button class="btn primary" onclick="runSource('${s.name}')">Run Now</button>
+                    `).join('')}
+                </div>
+            `).join('');
+        }
+
+        function renderList(data) {
+            if (!data.length) return '<div class="empty">No data</div>';
+            return data.map(item => `
+                <div class="timeline-item">
+                    <div class="item-title">${esc(item.title || '')}</div>
+                    <div class="item-meta">${esc(item.subtitle || item.channel || '')}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderProgressList(data) {
+            if (!data.length) return '<div class="empty">All caught up!</div>';
+            return data.map(item => `
+                <div class="progress-item">
+                    <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${item.watch_percent || item.percent || 0}%"></div></div>
+                    <span class="pct">${item.watch_percent || item.percent || 0}%</span>
+                    <span class="item-title">${esc(item.title || '')}</span>
+                </div>
+            `).join('');
+        }
+
+        function renderGrid(data) {
+            if (!data.length) return '<div class="empty">No data</div>';
+            return `<div class="thumb-grid">${data.map(item => `
+                <div class="thumb-item">${esc(item.title || '')}</div>
+            `).join('')}</div>`;
+        }
+
+        function renderTable(data) {
+            if (!data.length) return '<div class="empty">No data</div>';
+            const cols = Object.keys(data[0]);
+            return `<table class="data-table"><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${data.map(row => `<tr>${cols.map(c => `<td>${esc(String(row[c] || ''))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+        }
+
+        function renderConversation(data) {
+            if (!data.length) return '<div class="empty">No messages</div>';
+            return data.map(msg => `
+                <div class="conv-msg ${msg.role}">
+                    <div class="role">${esc(msg.role)}</div>
+                    ${esc(msg.content || '').substring(0, 500)}
+                </div>
+            `).join('');
+        }
+
+        function renderByType(displayType, data) {
+            switch (displayType) {
+                case 'stat_cards': return renderStatCards(data);
+                case 'timeline': return renderTimeline(data);
+                case 'list': return renderList(data);
+                case 'progress_list': return renderProgressList(data);
+                case 'grid': return renderGrid(data);
+                case 'table': return renderTable(data);
+                case 'conversation': return renderConversation(data);
+                default: return `<div class="empty">Unknown display type: ${displayType}</div>`;
+            }
+        }
+
+        // ============================================================
+        // Home Page
+        // ============================================================
+        async function renderHome() {
+            const el = document.getElementById('page-content');
+
+            // Check if any skills need sign-in
+            let wizardHtml = '';
+            try {
+                const provResp = await fetch('/api/auth_providers');
+                const providers = await provResp.json();
+                const needsSignIn = providers.some(p => !p.all_logged_in);
+                if (needsSignIn) {
+                    let steps = '';
+                    let num = 1;
+                    for (const p of providers) {
+                        const done = p.all_logged_in;
+                        const skillNames = p.skills.map(s => s.name.replace('_', ' ')).join(', ');
+                        steps += `<div class="wizard-step ${done ? 'done' : ''}">
+                            <div class="step-num">${done ? '&#10003;' : num}</div>
+                            <div class="step-info"><h4>Sign into ${esc(p.provider.charAt(0).toUpperCase() + p.provider.slice(1))}</h4><p>Covers: ${esc(skillNames)}</p></div>
+                            ${done ? '' : `<button class="btn primary" onclick="doSignIn('${p.skills[0].name}','${p.provider}')">Sign In</button>`}
+                        </div>`;
+                        num++;
+                    }
+                    wizardHtml = `<div class="card" style="border-color:#7c3aed44;margin-bottom:24px">
+                        <h3 style="margin-bottom:12px">Set Up Your Sources</h3>
+                        <p style="font-size:13px;color:#888;margin-bottom:16px">Sign into the services you want Memory Tap to collect from.</p>
+                        ${steps}
+                    </div>`;
+                }
+            } catch(e) {}
+
+            // Load widgets
+            let widgetHtml = '<div class="loading">Loading widgets...</div>';
+            try {
+                const wResp = await fetch('/api/widgets');
+                const widgets = await wResp.json();
+                if (widgets.length === 0) {
+                    widgetHtml = '<div class="empty">No widgets yet. Skills will appear here once installed.</div>';
+                } else {
+                    let cards = '';
+                    for (const w of widgets) {
+                        cards += `<div class="widget ${w.size}" onclick="navigate('skill','${esc(w.skill_name)}')" id="widget-${w.skill_name}-${w.name}">
+                            <div class="widget-title">${esc(w.title)}</div>
+                            <div class="widget-data loading">Loading...</div>
+                        </div>`;
+                    }
+                    widgetHtml = `<div class="widget-grid">${cards}</div>`;
+                    // Load widget data async
+                    setTimeout(() => loadWidgetData(widgets), 100);
+                }
+            } catch(e) { widgetHtml = '<div class="empty">Failed to load widgets</div>'; }
+
+            el.innerHTML = wizardHtml + widgetHtml;
+        }
+
+        async function loadWidgetData(widgets) {
+            for (const w of widgets) {
+                try {
+                    const resp = await fetch(`/api/widgets/${w.skill_name}/${w.name}/data`);
+                    const result = await resp.json();
+                    const el = document.querySelector(`#widget-${w.skill_name}-${w.name} .widget-data`);
+                    if (el && result.data) {
+                        el.innerHTML = renderByType(result.display_type, result.data);
+                        el.classList.remove('loading');
+                    }
+                } catch(e) {}
+            }
+        }
+
+        async function doSignIn(skillName, provider) {
+            const resp = await fetch(`/api/skills/${skillName}/login`, { method: 'POST' });
+            alert(`Chrome opened for ${provider} sign-in. Complete it, then come back.`);
+            // Poll
+            let checks = 0;
+            const poll = setInterval(async () => {
+                checks++;
+                if (checks > 60) { clearInterval(poll); return; }
+                try {
+                    const r = await fetch(`/api/skills/${skillName}/check_login`, { method: 'POST' });
+                    const d = await r.json();
+                    if (d.logged_in) { clearInterval(poll); renderHome(); }
+                } catch(e) {}
+            }, 10000);
+        }
+
+        // ============================================================
+        // Skill Page
+        // ============================================================
+        async function renderSkillPage(skillName) {
+            const el = document.getElementById('page-content');
+            el.innerHTML = '<div class="loading">Loading skill page...</div>';
+
+            try {
+                const [pageResp, infoResp] = await Promise.all([
+                    fetch(`/api/skills/${skillName}/page`),
+                    fetch(`/api/skills/${skillName}`),
+                ]);
+                const page = await pageResp.json();
+                const info = await infoResp.json();
+
+                let html = `<div class="back-btn" onclick="navigate('home')">&larr; Back</div>`;
+                html += `<h2 style="margin-bottom:20px">${esc(info.name || skillName)}</h2>`;
+
+                for (const section of page.sections.sort((a,b) => a.position - b.position)) {
+                    const collapsed = section.collapsible ? '' : '';
+                    html += `<div class="section">
+                        <div class="section-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+                            <h3>${esc(section.title)}</h3>
+                            ${section.collapsible ? '<span class="toggle">&#9660;</span>' : ''}
+                        </div>
+                        <div class="section-content" id="section-${section.name}">
+                            <div class="loading">Loading...</div>
                         </div>
                     </div>`;
                 }
-                document.getElementById('sources-list').innerHTML = html;
+
+                // Search section
+                html += `<div class="section">
+                    <h3 style="margin-bottom:12px">Search</h3>
+                    <div class="search-box">
+                        <input type="text" id="skill-search-input" placeholder="Search ${esc(skillName)} data..." onkeydown="if(event.key==='Enter')doSkillSearch('${esc(skillName)}')">
+                        <button class="btn primary" onclick="doSkillSearch('${esc(skillName)}')">Search</button>
+                    </div>
+                    <div id="skill-search-results"></div>
+                </div>`;
+
+                el.innerHTML = html;
+
+                // Load section data
+                for (const section of page.sections) {
+                    loadSectionData(skillName, section);
+                }
             } catch(e) {
-                document.getElementById('sources-list').innerHTML =
-                    '<div class="loading">Failed to load sources</div>';
+                el.innerHTML = `<div class="back-btn" onclick="navigate('home')">&larr; Back</div><div class="empty">Failed to load skill page: ${e}</div>`;
             }
         }
 
-        async function loginProvider(skillName) {
+        async function loadSectionData(skillName, section, page = 1) {
             try {
-                const resp = await fetch(`/api/sources/${skillName}/login`, { method: 'POST' });
-                const data = await resp.json();
-                if (data.url) alert('A Chrome window has opened. Please sign in there.\\nOnce done, come back and click "Run Now" to verify.');
-                setTimeout(() => { loadSources(); checkSignInStatus(); }, 5000);
-            } catch(e) { alert('Failed to open sign-in: ' + e); }
+                const resp = await fetch(`/api/skills/${skillName}/sections/${section.name}/data?page=${page}`);
+                const result = await resp.json();
+                const el = document.getElementById(`section-${section.name}`);
+                if (el && result.data) {
+                    let html = renderByType(result.display_type, result.data);
+                    if (section.paginated && result.data.length >= section.page_size) {
+                        html += `<div style="text-align:center;margin-top:12px"><button class="btn" onclick="loadSectionData('${skillName}',${JSON.stringify(section)},${page+1})">Load more</button></div>`;
+                    }
+                    if (page > 1) el.innerHTML += html;
+                    else el.innerHTML = html;
+                }
+            } catch(e) {}
         }
 
-        async function loadSettings() {
-            try {
-                const resp = await fetch('/api/settings');
-                const data = await resp.json();
-                if (data.llm_provider) document.getElementById('llm-provider').value = data.llm_provider;
-                if (data.api_key_masked) document.getElementById('api-key').placeholder = data.api_key_masked;
-            } catch(e) {}
+        async function doSkillSearch(skillName) {
+            const q = document.getElementById('skill-search-input').value.trim();
+            if (!q) return;
+            const resp = await fetch(`/api/skills/${skillName}/search?q=${encodeURIComponent(q)}`);
+            const results = await resp.json();
+            const el = document.getElementById('skill-search-results');
+            if (!results.length) { el.innerHTML = '<div class="empty">No results</div>'; return; }
+            el.innerHTML = results.map(r => `
+                <div class="search-result">
+                    <div class="sr-title">${esc(r.title || '')}</div>
+                    <div class="sr-snippet">${esc(r.snippet || '')}</div>
+                </div>
+            `).join('');
+        }
+
+        // ============================================================
+        // Settings Page
+        // ============================================================
+        async function renderSettings() {
+            const el = document.getElementById('page-content');
+            el.innerHTML = '<div class="loading">Loading settings...</div>';
+
+            const [settingsResp, skillsResp, healthResp] = await Promise.all([
+                fetch('/api/settings'),
+                fetch('/api/skills'),
+                fetch('/api/system/health'),
+            ]);
+            const settings = await settingsResp.json();
+            const skills = await skillsResp.json();
+            const health = await healthResp.json();
+
+            let html = '<h2 style="margin-bottom:20px">Settings</h2>';
+
+            // LLM Settings
+            html += `<div class="card">
+                <h3 style="margin-bottom:12px">LLM Configuration</h3>
+                <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="gemini-2.5-flash">Gemini 2.5 Flash</option></select></div>
+                <div class="setting-row"><label>API Key</label><input type="password" id="s-apikey" placeholder="${esc(settings.api_key_masked || 'sk-or-...')}"></div>
+                <div style="margin-top:12px"><button class="btn primary" onclick="saveSettings()">Save</button> <button class="btn" onclick="checkUpdates()">Check for Skill Updates</button></div>
+            </div>`;
+
+            // Skills
+            html += '<div class="card"><h3 style="margin-bottom:12px">Installed Skills</h3>';
+            if (skills.length === 0) {
+                html += '<div class="empty">No skills installed</div>';
+            } else {
+                for (const s of skills) {
+                    const color = s.login_status === 'logged_in' ? 'green' : s.login_status === 'not_logged_in' ? 'red' : 'yellow';
+                    const lastSync = s.last_sync_at ? timeAgo(s.last_sync_at) : 'Never';
+                    html += `<div class="skill-card">
+                        <div class="skill-info">
+                            <h4 onclick="navigate('skill','${esc(s.name)}')" style="cursor:pointer;color:#7c3aed">${esc(s.name)}</h4>
+                            <div class="skill-meta"><span class="status-dot ${color}"></span>${s.login_status} &middot; v${esc(s.version)} &middot; Last: ${lastSync}${s.last_error ? ' &middot; <span style="color:#ef4444">'+esc(s.last_error).substring(0,60)+'</span>' : ''}</div>
+                        </div>
+                        <div style="display:flex;gap:6px">
+                            <button class="btn" onclick="toggleSkill('${esc(s.name)}')">${s.enabled ? 'Disable' : 'Enable'}</button>
+                            <button class="btn primary" onclick="runSkill('${esc(s.name)}')">Run</button>
+                        </div>
+                    </div>`;
+                }
+            }
+            html += '</div>';
+
+            // System Health
+            html += `<div class="card"><h3 style="margin-bottom:12px">System</h3>
+                <div style="font-size:13px;color:#888">
+                    Chrome: ${health.chrome_running ? '<span style="color:#22c55e">running</span>' : '<span style="color:#ef4444">stopped</span>'}
+                    ${health.chrome_port ? ' (port ' + health.chrome_port + ')' : ''}
+                    ${health.chrome_pid ? ' PID ' + health.chrome_pid : ''}<br>
+                    Skills loaded: ${health.skills_loaded}<br>
+                    ${health.db_sizes.length ? 'DBs: ' + health.db_sizes.map(d => d.name + ' (' + d.size_mb + ' MB)').join(', ') : ''}
+                </div>
+            </div>`;
+
+            el.innerHTML = html;
         }
 
         async function saveSettings() {
-            const provider = document.getElementById('llm-provider').value;
-            const key = document.getElementById('api-key').value;
-            const body = { llm_provider: provider };
+            const body = { llm_provider: document.getElementById('s-provider').value };
+            const key = document.getElementById('s-apikey').value;
             if (key) body.api_key = key;
             await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-            alert('Settings saved');
-            loadSettings();
+            alert('Saved');
         }
 
-        async function toggleSource(name) {
-            await fetch(`/api/sources/${name}/toggle`, { method: 'POST' });
-            loadSources();
+        async function toggleSkill(name) {
+            await fetch(`/api/skills/${name}/toggle`, { method: 'POST' });
+            renderSettings();
         }
 
-        async function loginSource(name) {
-            const resp = await fetch(`/api/sources/${name}/login`, { method: 'POST' });
-            const data = await resp.json();
-            if (data.url) alert('Chrome opened for login. Please sign in and close the tab when done.');
-        }
-
-        async function runSource(name) {
-            const btn = event.target;
-            btn.textContent = 'Running...';
-            btn.disabled = true;
+        async function runSkill(name) {
+            event.target.textContent = '...';
+            event.target.disabled = true;
             try {
-                const resp = await fetch(`/api/sources/${name}/run`, { method: 'POST' });
+                const resp = await fetch(`/api/skills/${name}/run`, { method: 'POST' });
                 const data = await resp.json();
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                } else if (data.details && data.details.zero_items_warning) {
-                    const msg = `Warning: Found 0 items (previously had ${data.details.previous_count}).\n` +
-                        `The website may have changed.\n\n` +
-                        `Click OK to report this issue on GitHub.`;
-                    if (confirm(msg)) {
-                        window.open(data.details.github_issue_url, '_blank');
-                    }
-                } else {
-                    alert(`Done! Found ${data.items_found} items (${data.items_new} new)`);
-                }
-            } finally {
-                btn.textContent = 'Run Now';
-                btn.disabled = false;
-                loadSources();
-                loadTimeline();
-                loadStats();
-                loadAlerts();
-            }
+                if (data.error) alert('Error: ' + data.error);
+                else alert(`Done! ${data.items_found} found, ${data.items_new} new`);
+            } finally { renderSettings(); }
         }
 
-        async function doSearch() {
-            const q = document.getElementById('search-input').value.trim();
-            if (!q) return;
-            const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-            const results = await resp.json();
-            if (results.length === 0) {
-                document.getElementById('search-results').innerHTML = '<div class="loading">No results found</div>';
-                return;
-            }
-            let html = '';
-            for (const r of results) {
-                if (r.type === 'message') {
-                    const badge = r.source.includes('chatgpt') ? 'chatgpt' : r.source.includes('gemini') ? 'gemini' : 'sync';
-                    html += `<div class="search-result">
-                        <span class="source-badge badge-${badge}">${r.source}</span>
-                        <strong>${esc(r.conversation_title)}</strong> (${r.role})
-                        <div class="snippet">${esc(r.content)}</div>
-                    </div>`;
-                } else {
-                    html += `<div class="search-result">
-                        <span class="source-badge badge-youtube">YouTube</span>
-                        <strong>${esc(r.title)}</strong> &middot; ${esc(r.channel || '')}
-                        <div class="snippet">${esc(r.description || '')}</div>
-                    </div>`;
-                }
-            }
-            document.getElementById('search-results').innerHTML = html;
+        async function checkUpdates() {
+            const resp = await fetch('/api/skills/check_updates', { method: 'POST' });
+            const data = await resp.json();
+            alert(data.updated.length ? 'Updated: ' + data.updated.join(', ') : 'All up to date');
+            renderSettings();
         }
 
-        document.getElementById('search-input').addEventListener('keydown', e => {
-            if (e.key === 'Enter') doSearch();
-        });
-
+        // ============================================================
+        // Helpers
+        // ============================================================
         function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
         function formatDate(d) {
+            if (!d) return '';
             const today = new Date().toISOString().slice(0,10);
             const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
             if (d === today) return 'Today';
             if (d === yesterday) return 'Yesterday';
-            return new Date(d + 'T00:00:00').toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'});
+            return new Date(d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
         }
         function timeAgo(iso) {
+            if (!iso) return '';
             const diff = (Date.now() - new Date(iso).getTime()) / 1000;
             if (diff < 60) return 'just now';
             if (diff < 3600) return Math.floor(diff/60) + 'm ago';
             if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
             return Math.floor(diff/86400) + 'd ago';
         }
+
+        // ============================================================
+        // Init
+        // ============================================================
+        checkConsent();
+        setInterval(loadNotifs, 15000);
+        loadNotifs();
     </script>
 </body>
 </html>
