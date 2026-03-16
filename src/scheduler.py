@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from .cdp_client import CDPClient
 from .chrome_manager import ChromeManager, HealthMonitor
-from .db.core_db import get_core_connection, get_skill_info, register_skill, CORE_DB_PATH
+from .db.core_db import get_core_connection, get_skill_info, register_skill, CORE_DB_PATH, add_alert
 from .db.skill_db import SkillDBManager
 from .skills.base import BaseSkill
 
@@ -189,15 +189,78 @@ class SkillScheduler:
             "details": result.details,
         }
 
+    def _get_interrupted_skills(self) -> list[str]:
+        """Find skills whose last sync_log entry has status 'running' or an error.
+
+        These are skills that were interrupted (e.g., Chrome crash) and should
+        be retried after recovery.
+        """
+        interrupted = []
+        conn = get_core_connection(self.core_db_path)
+        for skill_name in self._skills:
+            row = conn.execute(
+                "SELECT status, error FROM sync_log "
+                "WHERE skill_name = ? ORDER BY id DESC LIMIT 1",
+                (skill_name,),
+            ).fetchone()
+            if row and (row["status"] == "running" or row["error"]):
+                interrupted.append(skill_name)
+        conn.close()
+        return interrupted
+
+    def retry_interrupted_skills(self):
+        """Check for skills interrupted by a crash and re-run them.
+
+        Called after Chrome auto-relaunches (health monitor detects recovery).
+        Waits 30 seconds before retrying to let Chrome stabilize.
+        """
+        interrupted = self._get_interrupted_skills()
+        if not interrupted:
+            return
+
+        logger.info("Found %d interrupted skill(s) after recovery: %s",
+                     len(interrupted), ", ".join(interrupted))
+        add_alert(
+            "Retrying interrupted skills",
+            f"Chrome recovered. Retrying: {', '.join(interrupted)}",
+            level="info", source="scheduler", db_path=self.core_db_path,
+        )
+
+        # Wait 30 seconds for Chrome to stabilize
+        for _ in range(30):
+            if not self._running:
+                return
+            time.sleep(1)
+
+        for name in interrupted:
+            if not self._running:
+                break
+            logger.info("Retrying interrupted skill: %s", name)
+            try:
+                self.run_skill(name)
+            except Exception as e:
+                logger.error("Retry failed for %s: %s", name, e)
+
     def start(self):
         """Start the scheduler background thread and health monitor."""
         if self._running:
             return
         self._running = True
+
+        # Wire up recovery callback: when health monitor detects Chrome
+        # came back after a crash, retry any interrupted skills
+        self.health.on_recovery = self._on_chrome_recovery
         self.health.start()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         logger.info("Scheduler started with %d skills", len(self._skills))
+
+    def _on_chrome_recovery(self):
+        """Called by HealthMonitor when Chrome recovers from a crash."""
+        thread = threading.Thread(
+            target=self.retry_interrupted_skills, daemon=True
+        )
+        thread.start()
 
     def stop(self):
         """Stop the scheduler and health monitor."""

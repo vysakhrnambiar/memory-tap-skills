@@ -13,9 +13,9 @@ Stop strategy: DATE_GROUP
 - History groups by: Today, Yesterday, day names, then "Mon DD"
 - Stop when: current date_group <= last_collected_date_group AND all videos in it are known
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 """
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 import json
 import logging
@@ -342,22 +342,8 @@ class YouTubeHistorySkill(BaseSkill):
 
             wait_human(2, 4)
 
-        # Phase 3: Save shorts (no page visit needed)
-        for short in history_items["shorts"]:
-            existing = conn.execute(
-                "SELECT id FROM shorts WHERE short_id = ?",
-                (short["short_id"],)
-            ).fetchone()
-            if not existing:
-                conn.execute(
-                    "INSERT INTO shorts (short_id, title, url, views_text, "
-                    "date_group, watched_date) VALUES (?, ?, ?, ?, ?, ?)",
-                    (short["short_id"], short.get("title", ""),
-                     short["url"], short.get("views_text", ""),
-                     short.get("date_group", ""), short.get("watched_date", "")),
-                )
-                new_count += 1
-        conn.commit()
+        # Phase 3: Shorts already saved incrementally in Phase 1
+        new_count += history_items.get("shorts_new_count", 0)
 
         # Phase 4: Update collection state
         if history_items["latest_date_group"]:
@@ -393,6 +379,7 @@ class YouTubeHistorySkill(BaseSkill):
         current_date_group = "Today"
         latest_date_group = None
         consecutive_known = 0
+        shorts_new_count = 0
 
         # List phase has its own scroll budget — don't use RunLimits scroll sessions
         is_first_run = limits.max_items > 0
@@ -528,25 +515,52 @@ class YouTubeHistorySkill(BaseSkill):
                             if consecutive_known >= 5:
                                 logger.info("Stop: 5 consecutive known items in old territory")
                                 return {"videos": videos, "shorts": shorts,
-                                        "latest_date_group": latest_date_group}
+                                        "latest_date_group": latest_date_group,
+                                        "shorts_new_count": shorts_new_count}
                         else:
                             consecutive_known = 0
 
                         videos.append(item)
 
-                    # Process shorts
+                        # Save video stub immediately (INSERT OR IGNORE)
+                        # Phase 2 will UPDATE with full details later
+                        conn.execute(
+                            "INSERT OR IGNORE INTO videos "
+                            "(video_id, url, watch_percent, resume_time_seconds, "
+                            "date_group, watched_date, content_type) "
+                            "VALUES (?, ?, ?, ?, ?, ?, 'video')",
+                            (vid, item["url"], item["watch_percent"],
+                             item["resume_time_seconds"],
+                             item["date_group"], item["watched_date"]),
+                        )
+                        conn.commit()
+
+                    # Process shorts — save immediately to DB
                     for s in data.get("shorts", []):
                         sid = _extract_short_id(s["href"])
                         if not sid or sid in seen_short_ids:
                             continue
                         seen_short_ids.add(sid)
-                        shorts.append({
+                        short_item = {
                             "short_id": sid,
                             "url": f"https://www.youtube.com/shorts/{sid}",
                             "title": s.get("title", ""),
                             "date_group": s.get("dateGroup", ""),
                             "watched_date": _parse_date_group(s.get("dateGroup", "")) or "",
-                        })
+                        }
+                        shorts.append(short_item)
+
+                        # Save short immediately (INSERT OR IGNORE)
+                        cur = conn.execute(
+                            "INSERT OR IGNORE INTO shorts "
+                            "(short_id, title, url, date_group, watched_date) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (sid, short_item["title"], short_item["url"],
+                             short_item["date_group"], short_item["watched_date"]),
+                        )
+                        if cur.rowcount > 0:
+                            shorts_new_count += 1
+                        conn.commit()
 
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.warning("Failed to parse history page data: %s", e)
@@ -555,7 +569,8 @@ class YouTubeHistorySkill(BaseSkill):
             scroll_slowly(tab, random.randint(400, 700))
             wait_human(1.5, 3.0)
 
-        return {"videos": videos, "shorts": shorts, "latest_date_group": latest_date_group}
+        return {"videos": videos, "shorts": shorts, "latest_date_group": latest_date_group,
+                "shorts_new_count": shorts_new_count}
 
     def _get_video_details(self, tab: CDPTab, video: dict) -> dict:
         """Navigate to video page and extract title, channel, description, comment.

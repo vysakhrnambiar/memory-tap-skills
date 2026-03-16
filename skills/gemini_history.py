@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 """
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 import json
 import logging
@@ -194,24 +194,19 @@ class GeminiHistorySkill(BaseSkill):
                 (ext_id,),
             ).fetchone()
 
-            if existing:
-                old_pos = existing["list_position"]
-                new_pos = conv["position"]
-                if new_pos >= old_pos and existing["message_count"] > 0:
-                    consecutive_known += 1
-                    conn.execute(
-                        "UPDATE conversations SET list_position = ? WHERE id = ?",
-                        (new_pos, existing["id"]),
-                    )
-                    conn.commit()
+            if existing and existing["message_count"] > 0:
+                consecutive_known += 1
+                conn.execute(
+                    "UPDATE conversations SET list_position = ? WHERE id = ?",
+                    (conv["position"], existing["id"]),
+                )
+                conn.commit()
 
-                    item = {"_consecutive_known": consecutive_known}
-                    if self.should_stop_collecting(item, tracker):
-                        logger.info("Stop: 5 consecutive known unchanged")
-                        break
-                    continue
-                else:
-                    consecutive_known = 0
+                item = {"_consecutive_known": consecutive_known}
+                if self.should_stop_collecting(item, tracker):
+                    logger.info("Stop: 5 consecutive known conversations — reached old territory")
+                    break
+                continue
             else:
                 consecutive_known = 0
 
@@ -239,7 +234,20 @@ class GeminiHistorySkill(BaseSkill):
 
             wait_human(2, 4)
 
+        # Courtesy: restore sidebar order by visiting original top conversations
+        self._restore_sidebar_order(tab, conversations[:5])
+
         return result
+
+    def _restore_sidebar_order(self, tab: CDPTab, original_top: list[dict]):
+        """Visit original top conversations in reverse to restore sidebar order."""
+        logger.info("Restoring sidebar order (visiting top %d conversations)", len(original_top))
+        for conv in reversed(original_top):
+            try:
+                tab.navigate(conv["url"])
+                wait_human(1, 2)
+            except Exception:
+                pass
 
     def _scan_sidebar(self, tab: CDPTab) -> list[dict]:
         """Scroll sidebar and collect conversation entries."""

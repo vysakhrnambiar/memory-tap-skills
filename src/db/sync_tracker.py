@@ -33,6 +33,7 @@ class SyncTracker:
                  core_db_path: str | None = None):
         self.skill_name = skill_name
         self.conn = skill_conn              # skill's own DB
+        self._skill_conn = skill_conn       # alias — skills use this name
         self.core_db_path = core_db_path or CORE_DB_PATH
         self._log_id: int | None = None
 

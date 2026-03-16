@@ -396,7 +396,8 @@
                     }
                     wizardHtml = `<div class="card" style="border-color:#7c3aed44;margin-bottom:24px">
                         <h3 style="margin-bottom:12px">Set Up Your Sources</h3>
-                        <p style="font-size:13px;color:#888;margin-bottom:16px">Sign into the services you want Memory Tap to collect from.</p>
+                        <p style="font-size:13px;color:#888;margin-bottom:16px">Sign into the services you want Memory Tap to collect from.<br>
+                        Each sign-in opens in the Memory Tap Chrome window. <strong>Sign in there, then come back here and click "I'm Done Signing In".</strong></p>
                         ${steps}
                     </div>`;
                 }
@@ -442,18 +443,28 @@
 
         async function doSignIn(skillName, provider) {
             const resp = await fetch(`/api/skills/${skillName}/login`, { method: 'POST' });
-            alert(`Chrome opened for ${provider} sign-in. Complete it, then come back.`);
-            // Poll
-            let checks = 0;
-            const poll = setInterval(async () => {
-                checks++;
-                if (checks > 60) { clearInterval(poll); return; }
-                try {
-                    const r = await fetch(`/api/skills/${skillName}/check_login`, { method: 'POST' });
-                    const d = await r.json();
-                    if (d.logged_in) { clearInterval(poll); renderHome(); }
-                } catch(e) {}
-            }, 10000);
+            // Show "Done" button instead of auto-polling
+            const wizard = document.querySelector('.wizard-step:not(.done) .btn.primary');
+            if (wizard) {
+                wizard.textContent = 'I\'m Done Signing In';
+                wizard.onclick = () => checkSignIn(skillName, provider);
+            }
+        }
+
+        async function checkSignIn(skillName, provider) {
+            const btn = document.querySelector('.wizard-step:not(.done) .btn.primary');
+            if (btn) { btn.textContent = 'Checking...'; btn.disabled = true; }
+            try {
+                const r = await fetch(`/api/skills/${skillName}/check_login`, { method: 'POST' });
+                const d = await r.json();
+                if (d.logged_in) {
+                    renderHome();
+                } else {
+                    if (btn) { btn.textContent = 'Not signed in yet — try again'; btn.disabled = false; btn.onclick = () => checkSignIn(skillName, provider); }
+                }
+            } catch(e) {
+                if (btn) { btn.textContent = 'Check failed — try again'; btn.disabled = false; }
+            }
         }
 
         // ============================================================

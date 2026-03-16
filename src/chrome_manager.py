@@ -277,6 +277,7 @@ class ChromeManager:
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
             "--remote-allow-origins=*",
+            "--mute-audio",
             "about:blank",
         ]
 
@@ -317,45 +318,49 @@ class ChromeManager:
             time.sleep(0.5)
         return False
 
-    def open_headed(self, url: str):
-        """Open a URL in the Chrome instance (makes window visible for user login).
+    def open_headed(self, url: str, reuse_blank: bool = False):
+        """Open a URL in the Chrome instance for user interaction (login etc).
 
-        Tries to reuse an existing about:blank tab first to avoid extra tabs.
-        If no blank tab exists, creates a new one.
-        Then navigates via CDP WebSocket (Chrome's /json/new?url= ignores the URL).
+        Always creates a NEW tab for the URL. This prevents navigating away
+        from the dashboard tab or any tab the user is currently on.
+
+        Only reuses blank tabs when reuse_blank=True (used for dashboard on first run).
         """
         import websocket as _ws
         import json as _json
 
-        # Step 1: Try to reuse an existing about:blank tab
         tab_info = None
-        try:
-            resp = requests.get(f"{self.cdp_base_url}/json", timeout=5)
-            tabs = [t for t in resp.json() if t.get("type") == "page"]
-            for t in tabs:
-                if t.get("url") in ("about:blank", "chrome://newtab/", ""):
-                    tab_info = t
-                    logger.info("Reusing existing blank tab %s", t["id"][:8])
-                    break
-        except Exception:
-            pass
 
-        # Step 2: If no blank tab, create one
+        # Optionally reuse an about:blank tab (only for dashboard on first run)
+        if reuse_blank:
+            try:
+                resp = requests.get(f"{self.cdp_base_url}/json", timeout=5)
+                tabs = [t for t in resp.json() if t.get("type") == "page"]
+                for t in tabs:
+                    if t.get("url") in ("about:blank", "chrome://newtab/", ""):
+                        tab_info = t
+                        logger.info("Reusing existing blank tab %s", t["id"][:8])
+                        break
+            except Exception:
+                pass
+
+        # Create a new tab
         if not tab_info:
             for method in [requests.put, requests.get]:
                 try:
                     resp = method(f"{self.cdp_base_url}/json/new", timeout=5)
                     if resp.status_code == 200:
                         tab_info = resp.json()
+                        logger.info("Created new tab %s for %s", tab_info.get("id", "?")[:8], url[:40])
                         break
                 except Exception:
                     continue
 
         if not tab_info:
-            logger.error("Failed to get/create tab for URL: %s", url)
+            logger.error("Failed to create tab for URL: %s", url)
             return None
 
-        # Step 3: Navigate via CDP WebSocket
+        # Navigate via CDP WebSocket
         try:
             ws_url = tab_info.get("webSocketDebuggerUrl", "")
             if ws_url:
@@ -449,6 +454,7 @@ class HealthMonitor:
         self.last_check: dict | None = None
         self._thread: threading.Thread | None = None
         self._running = False
+        self.on_recovery: callable = None  # callback when Chrome recovers from crash
 
     def start(self):
         if self._running:
@@ -516,6 +522,12 @@ class HealthMonitor:
                     add_alert("Chrome Restarted", "Chrome was closed or crashed and has been automatically restarted.", level="info", source="health")
                     self.healthy = True
                     status["healthy"] = True
+                    # Notify scheduler to retry interrupted skills
+                    if self.on_recovery:
+                        try:
+                            self.on_recovery()
+                        except Exception as e:
+                            logger.error("on_recovery callback failed: %s", e)
                 else:
                     add_alert("Chrome Stopped", "Chrome crashed and could not be restarted. Skills are paused.", level="error", source="health")
             elif not status["cdp_responds"]:

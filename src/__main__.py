@@ -148,21 +148,32 @@ def _handle_first_run(chrome: ChromeManager):
     """
     # get_setting and set_setting already imported at module level from core_db
 
-    if get_setting("first_run_done") == "yes":
-        return
+    is_first_run = get_setting("first_run_done") != "yes"
 
-    logger.info("First run detected — registering startup + opening dashboard")
+    if is_first_run:
+        logger.info("First run detected — registering startup")
+        _register_startup()
+        set_setting("first_run_done", "yes")
 
-    # Register for auto-start on login
-    _register_startup()
-
-    # First run: open dashboard in the ISOLATED Chrome (so user can sign in from there)
+    # Always open dashboard in Chrome if only about:blank is open
     import time
     time.sleep(2)
-    chrome.open_headed(f"http://localhost:{DASHBOARD_PORT}")
+    try:
+        import requests as _req
+        tabs_resp = _req.get(f"http://localhost:{chrome.port}/json", timeout=5)
+        tabs = [t for t in tabs_resp.json() if t.get("type") == "page"]
+        all_blank = all(t.get("url") in ("about:blank", "chrome://newtab/", "") for t in tabs)
+        if all_blank or not tabs:
+            logger.info("Opening dashboard in Chrome (all tabs blank or no tabs)")
+            chrome.open_headed(f"http://localhost:{DASHBOARD_PORT}", reuse_blank=True)
+        else:
+            logger.info("Chrome already has tabs open — not auto-opening dashboard")
+    except Exception as e:
+        logger.warning("Could not check Chrome tabs, opening dashboard anyway: %s", e)
+        chrome.open_headed(f"http://localhost:{DASHBOARD_PORT}", reuse_blank=True)
 
-    set_setting("first_run_done", "yes")
-    logger.info("First run setup complete — dashboard open in isolated Chrome")
+    if is_first_run:
+        logger.info("First run setup complete")
 
 
 def _uninstall():
@@ -345,7 +356,7 @@ def main():
         # Wait for uvicorn to start
         for _ in range(30):
             try:
-                r = _req.get(f"http://localhost:{DASHBOARD_PORT}/api/stats", timeout=2)
+                r = _req.get(f"http://localhost:{DASHBOARD_PORT}/api/settings", timeout=2)
                 if r.status_code == 200:
                     break
             except Exception:

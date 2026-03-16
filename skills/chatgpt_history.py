@@ -17,9 +17,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 Scope: Regular chats (/c/) only. Projects (/g/g-p-), GPTs (/g/g-), Group chats (/gg/) excluded.
 Text only — no images, artifacts, files.
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 """
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 import json
 import logging
@@ -205,30 +205,26 @@ class ChatGPTHistorySkill(BaseSkill):
                 (ext_id,),
             ).fetchone()
 
-            if existing:
-                old_pos = existing["list_position"]
-                new_pos = conv["position"]
-                # If it moved UP, it was updated (user added messages)
-                # If it stayed or moved down, it's unchanged
-                if new_pos >= old_pos and existing["message_count"] > 0:
-                    consecutive_known += 1
-                    # Update position only
-                    conn.execute(
-                        "UPDATE conversations SET list_position = ? WHERE id = ?",
-                        (new_pos, existing["id"]),
-                    )
-                    conn.commit()
+            if existing and existing["message_count"] > 0:
+                # Known conversation — but might have new messages.
+                # We can't check message count without navigating, so on first pass
+                # just count it as known. The user's sidebar order changes when we
+                # visit conversations, so position-based detection is unreliable.
+                consecutive_known += 1
+                # Update position
+                conn.execute(
+                    "UPDATE conversations SET list_position = ? WHERE id = ?",
+                    (conv["position"], existing["id"]),
+                )
+                conn.commit()
 
-                    # Check stop
-                    item = {"_consecutive_known": consecutive_known}
-                    if self.should_stop_collecting(item, tracker):
-                        logger.info("Stop: 5 consecutive known unchanged conversations")
-                        break
-                    continue
-                else:
-                    consecutive_known = 0  # Reset — this one moved up
+                item = {"_consecutive_known": consecutive_known}
+                if self.should_stop_collecting(item, tracker):
+                    logger.info("Stop: 5 consecutive known conversations — reached old territory")
+                    break
+                continue
             else:
-                consecutive_known = 0  # New conversation
+                consecutive_known = 0  # New or empty conversation
 
             # Navigate to conversation and collect messages
             try:
@@ -257,8 +253,25 @@ class ChatGPTHistorySkill(BaseSkill):
 
             wait_human(2, 4)
 
-        result.items_updated = result.items_updated  # already tracked
+        # Courtesy: restore sidebar order by visiting original top conversations
+        # Our collection visited conversations which moved them to top — undo that
+        self._restore_sidebar_order(tab, conversations[:5])
+
         return result
+
+    def _restore_sidebar_order(self, tab: CDPTab, original_top: list[dict]):
+        """Visit original top conversations in reverse to restore sidebar order.
+
+        When we collect, visiting conversations pushes them to sidebar top.
+        This visits the original top 5 in reverse so they end up back on top.
+        """
+        logger.info("Restoring sidebar order (visiting top %d conversations)", len(original_top))
+        for conv in reversed(original_top):
+            try:
+                tab.navigate(conv["url"])
+                wait_human(1, 2)
+            except Exception:
+                pass
 
     def _scan_sidebar(self, tab: CDPTab) -> list[dict]:
         """Scroll sidebar and collect all conversation entries.

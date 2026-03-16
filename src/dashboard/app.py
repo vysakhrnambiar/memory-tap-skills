@@ -80,6 +80,12 @@ async def api_update_settings(request: Request):
     for key, value in data.items():
         if key and value is not None:
             set_setting(key, str(value), _db_path)
+            if key == "consent_accepted":
+                logger.info("API: User accepted indemnity/consent")
+            elif key == "api_key":
+                logger.info("API: API key updated")
+            else:
+                logger.info("API: Setting updated: %s", key)
     return {"status": "ok"}
 
 
@@ -126,11 +132,14 @@ async def api_toggle_skill(name: str):
 @app.post("/api/skills/{name}/run")
 async def api_run_skill(name: str):
     """Trigger immediate skill run."""
+    logger.info("API: run_skill(%s) — user triggered manual run", name)
     if not _scheduler:
         return JSONResponse({"error": "Scheduler not initialized"}, status_code=500)
     result = _scheduler.run_skill(name)
     if result is None:
         return JSONResponse({"error": f"Skill '{name}' not found"}, status_code=404)
+    logger.info("API: run_skill(%s) — completed: found=%s, new=%s, error=%s",
+                name, result.get("items_found"), result.get("items_new"), result.get("error"))
     return result
 
 
@@ -143,27 +152,137 @@ async def api_open_login(name: str):
     if not skill:
         return JSONResponse({"error": f"Skill '{name}' not found"}, status_code=404)
     url = skill.get_login_url()
+    logger.info("API: open_login(%s) — opening %s in new Chrome tab", name, url)
     _chrome_manager.open_headed(url)
     return {"status": "opened", "url": url}
 
 
 @app.post("/api/skills/{name}/check_login")
 async def api_check_login(name: str):
-    """Quick login check via CDP."""
+    """Cookie-only login check — does NOT navigate, open, or close any tabs.
+
+    Connects to an existing tab via raw WebSocket, checks cookies, disconnects.
+    The tab stays alive and untouched.
+    """
     if not _scheduler:
         return JSONResponse({"error": "Not initialized"}, status_code=500)
     skill = _scheduler._skills.get(name)
     if not skill:
         return JSONResponse({"error": f"Skill '{name}' not found"}, status_code=404)
-    from ..cdp_client import CDPClient
+
+    import requests as _req
+    import websocket as _ws
+    import json as _json
+
     try:
-        with CDPClient() as client:
-            tab = client.new_tab(skill.manifest.target_url)
-            logged_in = skill.check_login(tab)
-            client.close_tab(tab)
-            update_skill_login_status(name, "logged_in" if logged_in else "not_logged_in", _db_path)
-            return {"name": name, "logged_in": logged_in}
+        port = None
+        if _chrome_manager:
+            port = _chrome_manager.port
+        if not port:
+            logger.warning("check_login(%s): Chrome not running", name)
+            return JSONResponse({"error": "Chrome not running"}, status_code=500)
+
+        # Find the login tab (the one on the target site) or any tab
+        tabs_resp = _req.get(f"http://localhost:{port}/json", timeout=5)
+        tabs = [t for t in tabs_resp.json() if t.get("type") == "page"]
+        if not tabs:
+            logger.warning("check_login(%s): No tabs available", name)
+            return JSONResponse({"error": "No tabs"}, status_code=500)
+
+        # Find best tab to check cookies on — match by auth provider domain
+        # Google: any *.google.com tab (accounts, myaccount, gemini, youtube)
+        # OpenAI: any *.chatgpt.com or *.openai.com tab
+        provider = skill.manifest.auth_provider
+        provider_domains = {
+            "google": [".google.com", "youtube.com"],
+            "openai": ["chatgpt.com", "openai.com"],
+        }
+        match_domains = provider_domains.get(provider, [])
+        target_domain = skill.manifest.target_url.split("//")[-1].split("/")[0]
+        if target_domain not in match_domains:
+            match_domains.append(target_domain)
+
+        tab_info = None
+        # First: tab on a matching domain
+        for t in tabs:
+            tab_url = t.get("url") or ""
+            for domain in match_domains:
+                if domain in tab_url:
+                    tab_info = t
+                    break
+            if tab_info:
+                break
+        # Second: any non-localhost tab
+        if not tab_info:
+            for t in tabs:
+                tab_url = t.get("url") or ""
+                if "localhost" not in tab_url and "about:blank" not in tab_url:
+                    tab_info = t
+                    break
+        # Last resort: first tab
+        if not tab_info:
+            tab_info = tabs[0]
+
+        logger.info("check_login(%s): checking cookies on tab %s (%s)",
+                     name, tab_info["id"][:8], tab_info.get("url", "")[:40])
+
+        # Raw WebSocket — connect, get cookies, disconnect. Do NOT close tab.
+        ws_url = tab_info.get("webSocketDebuggerUrl", "")
+        if not ws_url:
+            return JSONResponse({"error": "No WebSocket URL for tab"}, status_code=500)
+
+        ws = _ws.create_connection(ws_url, timeout=10)
+        # Enable Network domain
+        ws.send(_json.dumps({"id": 1, "method": "Network.enable", "params": {}}))
+        ws.recv()
+        # Get cookies
+        ws.send(_json.dumps({"id": 2, "method": "Network.getCookies", "params": {}}))
+        resp = _json.loads(ws.recv())
+        # Disable Network domain and disconnect (tab stays alive)
+        ws.send(_json.dumps({"id": 3, "method": "Network.disable", "params": {}}))
+        try:
+            ws.recv()
+        except Exception:
+            pass
+        ws.close()
+
+        cookies = resp.get("result", {}).get("cookies", [])
+
+        # Check based on auth provider
+        provider = skill.manifest.auth_provider
+        logged_in = False
+
+        if provider == "google":
+            logged_in = any(
+                c.get("name") == "SID" and ".google.com" in c.get("domain", "")
+                for c in cookies
+            )
+        elif provider == "openai":
+            logged_in = any(
+                "session-token" in c.get("name", "")
+                for c in cookies
+            )
+        else:
+            logged_in = any(target_domain in c.get("domain", "") for c in cookies)
+
+        status = "logged_in" if logged_in else "not_logged_in"
+        logger.info("check_login(%s): result=%s (checked %d cookies, provider=%s)",
+                     name, status, len(cookies), provider)
+        update_skill_login_status(name, status, _db_path)
+
+        # If logged in, mark ALL skills with the same auth provider as logged in
+        # (signing into Google covers YouTube + Gemini, signing into OpenAI covers ChatGPT)
+        if logged_in and provider and _scheduler:
+            for sname, sskill in _scheduler._skills.items():
+                if sname != name and sskill.manifest.auth_provider == provider:
+                    logger.info("check_login(%s): also marking %s as logged_in (same provider: %s)",
+                                name, sname, provider)
+                    update_skill_login_status(sname, "logged_in", _db_path)
+
+        return {"name": name, "logged_in": logged_in}
+
     except Exception as e:
+        logger.error("check_login(%s) failed: %s", name, e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
