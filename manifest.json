@@ -31,7 +31,7 @@
       "auth_provider": "google",
       "description": "Collects Gemini conversations - messages, thinking blocks, sources",
       "schedule_hours": 3,
-      "checksum": "sha256:a0d36aa46acb9d0fa58a6f9fe922471a144512dea6f201a1bd51b35d9677955a"
+      "checksum": "sha256:e883eb582a05e7a5686a9ff4b88ddf78243f1fd333647bc5fb8d9500f8773e60"
     }
   ]
 }

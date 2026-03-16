@@ -301,16 +301,26 @@ class GeminiHistorySkill(BaseSkill):
         tab.navigate(conv["url"])
         wait_human(3, 5)
 
-        # Wait for messages to render — retry with longer timeout if needed
-        found = tab.wait_for_selector("user-query, model-response", timeout=15)
-        if not found:
-            # Page might be slow — give it more time
-            logger.warning("Gemini: messages not found after 15s for '%s', waiting more...",
-                          conv.get("title", "?")[:40])
-            wait_human(3, 5)
-            found = tab.wait_for_selector("user-query, model-response", timeout=10)
-        if not found:
-            logger.warning("Gemini: no messages found for '%s' — page may not have loaded",
+        # Wait for messages to render AND have content (not just empty elements)
+        # Gemini hydrates elements after DOM creation — element exists but text is empty initially
+        deadline = time.time() + 20
+        content_ready = False
+        while time.time() < deadline:
+            has_content = tab.js("""
+                return (function() {
+                    var el = document.querySelector('user-query, model-response');
+                    if (!el) return 0;
+                    var text = el.textContent.trim();
+                    return text.length;
+                })();
+            """)
+            if has_content and int(has_content) > 10:
+                content_ready = True
+                break
+            time.sleep(0.5)
+
+        if not content_ready:
+            logger.warning("Gemini: messages empty after 20s for '%s'",
                           conv.get("title", "?")[:40])
 
         # Expand all thinking blocks
