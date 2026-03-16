@@ -1,39 +1,46 @@
 """
-ChatGPT History Skill — collects conversation history with messages and artifacts.
+ChatGPT History Skill — collects conversation history with messages, sources, code blocks.
 
-Flow:
-1. Navigate to chatgpt.com
-2. Check if logged in (sidebar with conversation list)
-3. Scan conversation list — track position for update detection
-4. For new/updated conversations: open each, scroll through, collect all messages
-5. Download any artifacts (shown as download buttons)
-6. Store in conversations + messages + artifacts tables
+Verified selectors via CDP probe (2026-03-15):
+- Sidebar: nav a[href*="/c/"] — regular chats, UUID in URL
+- Messages: [data-message-id] with [data-message-author-role] ("user" / "assistant")
+- Sources: group/footnote bg-token-bg-primary links
+- Code blocks: pre code inside [data-message-id]
+- Timestamps: hidden behind "..." click, format "Feb 18, 2:07 PM"
+- Login: __Secure-next-auth.session-token.0 cookie on .chatgpt.com
 
-__version__ = "0.1.0"
+Stop strategy: CONSECUTIVE_KNOWN
+- No date headers in sidebar
+- Track by conversation UUID + position
+- Updated conversations move to top
+
+Scope: Regular chats (/c/) only. Projects (/g/g-p-), GPTs (/g/g-), Group chats (/gg/) excluded.
+Text only — no images, artifacts, files.
+
+__version__ = "0.2.0"
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import json
 import logging
-import os
 import random
 import re
 import time
+from datetime import datetime
 
 logger = logging.getLogger("memory_tap.skill.chatgpt")
 
-# These imports resolve because the scheduler injects the project root into sys.path
-from src.skills.base import BaseSkill, SkillManifest, CollectResult
-from src.cdp_client import CDPTab
-from src.db.sync_tracker import SyncTracker
-from src.human import (
-    scroll_slowly, scroll_to_bottom, click_at, click_element, click_text,
-    wait_human, watch_page, move_mouse,
+from src.skills.base import (
+    BaseSkill, SkillManifest, CollectResult, StopStrategy, RunLimits,
 )
+from src.skills.ui_manifest import WidgetDefinition, PageSection, NotificationRule
+from src.cdp_client import CDPTab, CDPClient
+from src.db.sync_tracker import SyncTracker
+from src.human import scroll_slowly, wait_human, move_mouse
 
 
 class ChatGPTHistorySkill(BaseSkill):
-    """Collects ChatGPT conversation history."""
+    """Collects ChatGPT conversation history — messages, sources, code blocks."""
 
     @property
     def manifest(self) -> SkillManifest:
@@ -41,26 +48,104 @@ class ChatGPTHistorySkill(BaseSkill):
             name="chatgpt_history",
             version=__version__,
             target_url="https://chatgpt.com",
-            description="Collects ChatGPT conversations — messages, thinking blocks, artifacts",
+            description="Collects ChatGPT conversations — messages, sources, code blocks",
             auth_provider="openai",
             schedule_hours=3,
             login_url="https://chatgpt.com/auth/login",
+            max_items_first_run=30,   # 30 conversations on first run
+            max_items_per_run=0,      # unlimited for subsequent
+            max_minutes_per_run=30,
         )
+
+    @property
+    def stop_strategy(self) -> StopStrategy:
+        return StopStrategy.CONSECUTIVE_KNOWN
+
+    def _main_table_name(self) -> str:
+        return "conversations"
+
+    # ── Schema ────────────────────────────────────────────────────
+
+    def create_schema(self, conn) -> None:
+        """Create ChatGPT-specific tables in skill's own DB."""
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                external_id TEXT UNIQUE NOT NULL,    -- UUID from /c/{uuid}
+                title TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
+                is_pinned INTEGER DEFAULT 0,
+                list_position INTEGER DEFAULT 0,     -- sidebar position (0 = top/newest)
+                message_count INTEGER DEFAULT 0,
+                discovered_date TEXT NOT NULL DEFAULT (date('now')),
+                last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+                synced_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                message_id TEXT NOT NULL,            -- data-message-id UUID
+                role TEXT NOT NULL,                  -- 'user' or 'assistant'
+                content TEXT NOT NULL DEFAULT '',
+                thinking_block TEXT DEFAULT '',
+                sources TEXT DEFAULT '',              -- JSON array of {name, url}
+                code_blocks TEXT DEFAULT '',           -- JSON array of code strings
+                timestamp_text TEXT DEFAULT '',       -- "Feb 18, 2:07 PM" if captured
+                message_order INTEGER NOT NULL,
+                synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+                UNIQUE(conversation_id, message_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS collection_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                content, thinking_block, sources,
+                content='messages', content_rowid='id',
+                tokenize='porter unicode61'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content, thinking_block, sources)
+                VALUES (new.id, new.content, new.thinking_block, new.sources);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content, thinking_block, sources)
+                VALUES ('delete', old.id, old.content, old.thinking_block, old.sources);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content, thinking_block, sources)
+                VALUES ('delete', old.id, old.content, old.thinking_block, old.sources);
+                INSERT INTO messages_fts(rowid, content, thinking_block, sources)
+                VALUES (new.id, new.content, new.thinking_block, new.sources);
+            END;
+
+            CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role);
+            CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(last_updated);
+        """)
+        conn.commit()
+
+    # ── Login detection ───────────────────────────────────────────
 
     def check_login(self, tab: CDPTab) -> bool:
         """Check if logged into ChatGPT.
 
-        Verified detection (2026-03-14 CDP probe):
-        - Logged in:  __Secure-next-auth.session-token.0 cookie on .chatgpt.com,
-                      no "Log in" or "Sign up" text visible
-        - Not logged in: no session-token cookie, "Log in" and "Sign up" text visible,
-                         __Secure-next-auth.callback-url exists but is NOT auth
-        Note: contenteditable and nav sidebar exist even when NOT logged in.
+        Verified (2026-03-14 CDP probe):
+        - Logged in: __Secure-next-auth.session-token.0 cookie, no "Log in" text
+        - Not logged in: no session-token, "Log in" + "Sign up" text visible
         """
         tab.navigate("https://chatgpt.com")
         wait_human(3, 5)
 
-        # Primary: check for session-token cookie (most reliable)
+        # Primary: check for session-token cookie
         result = tab._send("Network.getCookies")
         if isinstance(result, dict) and "_error" not in result:
             cookies = result.get("cookies", [])
@@ -74,206 +159,406 @@ class ChatGPTHistorySkill(BaseSkill):
             logger.info("ChatGPT: not logged in (Log in/Sign up text visible)")
             return False
 
-        # If unclear — NOT logged in (never assume)
         logger.info("ChatGPT: login unclear, treating as not logged in")
         return False
 
-    def collect(self, tab: CDPTab, tracker: SyncTracker) -> CollectResult:
-        """Collect conversations from ChatGPT."""
-        result = CollectResult()
+    # ── Stop signal ───────────────────────────────────────────────
 
-        # Ensure we're on the main page with sidebar visible
+    def should_stop_collecting(self, item: dict, tracker: SyncTracker) -> bool:
+        """CONSECUTIVE_KNOWN stop: stop after 5 consecutive known, unchanged conversations."""
+        # This is tracked in collect() via consecutive_known counter
+        # The item dict has 'is_known' and 'is_updated' flags
+        return item.get("_consecutive_known", 0) >= 5
+
+    # ── Collection ────────────────────────────────────────────────
+
+    def collect(self, tab: CDPTab, tracker: SyncTracker,
+                limits: RunLimits) -> CollectResult:
+        """Scan sidebar, detect new/updated conversations, collect messages."""
+        result = CollectResult()
+        conn = tracker._skill_conn
+
+        # Navigate to ChatGPT
         tab.navigate("https://chatgpt.com")
         wait_human(3, 5)
 
-        # Collect conversation list from sidebar
-        conversations = self._get_conversation_list(tab)
+        # Phase 1: Scan sidebar for conversation list
+        conversations = self._scan_sidebar(tab)
         result.items_found = len(conversations)
         logger.info("Found %d conversations in sidebar", len(conversations))
 
-        # Process each conversation
+        # Phase 2: Process each conversation
+        consecutive_known = 0
+
         for i, conv in enumerate(conversations):
-            external_id = conv["id"]
-            position = conv["position"]
+            # Check framework limits
+            if limits.should_stop():
+                logger.info("Stopping: %s", limits.stop_reason)
+                break
 
-            # Check if this conversation needs updating
-            if not tracker.conversation_needs_update(external_id, position):
-                continue
+            ext_id = conv["external_id"]
 
-            try:
-                # Click into the conversation
-                if not self._open_conversation(tab, conv):
+            # Check if conversation exists and if it moved (= updated)
+            existing = conn.execute(
+                "SELECT id, list_position, message_count FROM conversations "
+                "WHERE external_id = ?",
+                (ext_id,),
+            ).fetchone()
+
+            if existing:
+                old_pos = existing["list_position"]
+                new_pos = conv["position"]
+                # If it moved UP, it was updated (user added messages)
+                # If it stayed or moved down, it's unchanged
+                if new_pos >= old_pos and existing["message_count"] > 0:
+                    consecutive_known += 1
+                    # Update position only
+                    conn.execute(
+                        "UPDATE conversations SET list_position = ? WHERE id = ?",
+                        (new_pos, existing["id"]),
+                    )
+                    conn.commit()
+
+                    # Check stop
+                    item = {"_consecutive_known": consecutive_known}
+                    if self.should_stop_collecting(item, tracker):
+                        logger.info("Stop: 5 consecutive known unchanged conversations")
+                        break
                     continue
+                else:
+                    consecutive_known = 0  # Reset — this one moved up
+            else:
+                consecutive_known = 0  # New conversation
 
-                wait_human(2, 4)
-
-                # Collect all messages
-                messages = self._collect_messages(tab)
+            # Navigate to conversation and collect messages
+            try:
+                messages = self._collect_conversation(tab, conv)
 
                 # Upsert conversation
-                conv_id, is_new = tracker.upsert_conversation(
-                    external_id=external_id,
-                    title=conv["title"],
-                    url=f"https://chatgpt.com/c/{external_id}",
-                    list_position=position,
-                )
+                conv_db_id = self._upsert_conversation(conn, conv, len(messages))
 
-                # Add new messages
-                existing_count = tracker.get_message_count(conv_id)
-                new_messages = [m for m in messages if m["message_order"] > existing_count]
-                if new_messages:
-                    tracker.add_messages(conv_id, new_messages)
+                # Add/update messages
+                new_msg_count = self._save_messages(conn, conv_db_id, messages)
 
-                if is_new:
+                if not existing:
                     result.items_new += 1
-                elif new_messages:
+                elif new_msg_count > 0:
                     result.items_updated += 1
 
+                limits.item_done()
                 logger.info(
-                    "Collected conversation %d/%d: '%s' (%d messages, %d new)",
+                    "Collected conversation %d/%d: '%s' (%d msgs, %d new)",
                     i + 1, len(conversations), conv["title"][:50],
-                    len(messages), len(new_messages),
+                    len(messages), new_msg_count,
                 )
 
-                # Check for downloadable artifacts
-                self._collect_artifacts(tab, conv_id, tracker)
-
             except Exception as e:
-                logger.warning("Failed to collect conversation %s: %s", external_id, e)
+                logger.warning("Failed conversation %s: %s", ext_id, e)
 
-            wait_human(1, 3)
+            wait_human(2, 4)
 
+        result.items_updated = result.items_updated  # already tracked
         return result
 
-    def _get_conversation_list(self, tab: CDPTab) -> list[dict]:
-        """Extract conversation list from sidebar."""
-        # Scroll sidebar to load conversations
-        for _ in range(5):
+    def _scan_sidebar(self, tab: CDPTab) -> list[dict]:
+        """Scroll sidebar and collect all conversation entries.
+
+        Returns list of {external_id, title, position, is_pinned, url}.
+        """
+        # Scroll sidebar to load all conversations
+        for scroll_num in range(15):
             tab.js("""
                 var nav = document.querySelector('nav');
-                if (nav) nav.scrollTop += 300;
+                if (nav) nav.scrollTop += 400;
             """)
-            wait_human(0.5, 1.0)
+            wait_human(0.8, 1.5)
 
-        entries = tab.js("""
-            var items = document.querySelectorAll('nav li a, nav ol li a');
-            var out = [];
-            for (var i = 0; i < items.length; i++) {
-                var a = items[i];
-                var href = a.getAttribute('href') || '';
-                // ChatGPT conversation links: /c/uuid
-                var match = href.match(/\\/c\\/([a-f0-9-]+)/);
-                if (match) {
+        # Extract conversation links
+        entries_raw = tab.js("""
+            return (function() {
+                var links = document.querySelectorAll('nav a[href*="/c/"]');
+                var out = [];
+                var seen = new Set();
+                for (var i = 0; i < links.length; i++) {
+                    var a = links[i];
+                    var href = a.getAttribute('href') || '';
+                    var match = href.match(/\\/c\\/([a-f0-9-]+)/);
+                    if (!match || seen.has(match[1])) continue;
+                    seen.add(match[1]);
+
+                    var label = a.getAttribute('aria-label') || '';
+                    var isPinned = label.toLowerCase().includes('pinned');
+                    var title = a.textContent.trim();
+
                     out.push({
-                        id: match[1],
-                        title: a.textContent.trim().substring(0, 200),
-                        position: i,
-                        href: href
+                        external_id: match[1],
+                        title: title.substring(0, 300),
+                        position: out.length,
+                        is_pinned: isPinned,
+                        url: 'https://chatgpt.com' + href,
                     });
                 }
-            }
-            return JSON.stringify(out);
+                return JSON.stringify(out);
+            })();
         """)
 
-        if entries:
+        if entries_raw:
             try:
-                return json.loads(entries)
+                return json.loads(entries_raw)
             except (json.JSONDecodeError, TypeError):
                 pass
         return []
 
-    def _open_conversation(self, tab: CDPTab, conv: dict) -> bool:
-        """Navigate to a specific conversation."""
-        href = conv.get("href", f"/c/{conv['id']}")
-        tab.navigate(f"https://chatgpt.com{href}")
-        wait_human(2, 4)
+    def _collect_conversation(self, tab: CDPTab, conv: dict) -> list[dict]:
+        """Navigate to conversation and extract all messages.
 
-        # Wait for messages to appear
-        return tab.wait_for_selector("[data-message-id], .agent-turn, .user-turn", timeout=10) is not None
+        Returns list of {message_id, role, content, thinking_block, sources, code_blocks, message_order}.
+        """
+        tab.navigate(conv["url"])
+        wait_human(3, 5)
 
-    def _collect_messages(self, tab: CDPTab) -> list[dict]:
-        """Scroll through conversation and collect all messages."""
-        messages = []
+        # All messages load at once (verified in probe) — just wait for them
+        tab.wait_for_selector("[data-message-id]", timeout=10)
 
-        # Scroll to top first
-        tab.js("window.scrollTo(0, 0)")
-        wait_human(1, 2)
+        # Extract messages with role, content, sources, code
+        messages_raw = tab.js("""
+            return (function() {
+                var msgs = document.querySelectorAll('[data-message-id]');
+                var out = [];
+                for (var i = 0; i < msgs.length; i++) {
+                    var el = msgs[i];
+                    var msgId = el.getAttribute('data-message-id') || '';
+                    var role = el.getAttribute('data-message-author-role') || 'unknown';
 
-        # Scroll through entire conversation
-        scroll_to_bottom(tab, max_scrolls=30, pause_range=(0.5, 1.5))
+                    // Content — main text
+                    var content = el.textContent.trim();
 
-        # Extract all messages
-        raw = tab.js("""
-            var turns = document.querySelectorAll('[data-message-id], .group\\/conversation-turn');
-            var out = [];
-            for (var i = 0; i < turns.length; i++) {
-                var turn = turns[i];
-                var role = 'unknown';
-                // Detect role
-                if (turn.querySelector('.agent-turn, [data-message-author-role="assistant"]') ||
-                    turn.classList.contains('agent-turn')) {
-                    role = 'assistant';
-                } else if (turn.querySelector('.user-turn, [data-message-author-role="user"]') ||
-                           turn.classList.contains('user-turn')) {
-                    role = 'user';
-                } else {
-                    // Fallback: check content structure
-                    var authorEl = turn.querySelector('[data-message-author-role]');
-                    if (authorEl) role = authorEl.getAttribute('data-message-author-role');
+                    // Sources — look for footnote links
+                    var sourceEls = el.querySelectorAll('a[class*="footnote"], .group\\\\/footnote a');
+                    var sources = [];
+                    for (var s = 0; s < sourceEls.length; s++) {
+                        var sa = sourceEls[s];
+                        var sUrl = sa.getAttribute('href') || '';
+                        var sName = sa.textContent.trim();
+                        if (sUrl && sName) {
+                            sources.push({name: sName, url: sUrl});
+                        }
+                    }
+
+                    // Code blocks
+                    var codeEls = el.querySelectorAll('pre code');
+                    var codeBlocks = [];
+                    for (var c = 0; c < codeEls.length; c++) {
+                        var code = codeEls[c].textContent.trim();
+                        if (code) codeBlocks.push(code.substring(0, 10000));
+                    }
+
+                    if (msgId && content) {
+                        out.push({
+                            message_id: msgId,
+                            role: role,
+                            content: content.substring(0, 50000),
+                            thinking_block: '',
+                            sources: sources.length > 0 ? JSON.stringify(sources) : '',
+                            code_blocks: codeBlocks.length > 0 ? JSON.stringify(codeBlocks) : '',
+                            message_order: i + 1,
+                        });
+                    }
                 }
-
-                var content = turn.textContent.trim();
-
-                // Check for thinking block
-                var thinkingEl = turn.querySelector('[class*="thinking"], details summary');
-                var thinking = thinkingEl ? thinkingEl.closest('details')?.textContent || '' : '';
-
-                if (content) {
-                    out.push({
-                        role: role,
-                        content: content.substring(0, 10000),
-                        thinking_block: thinking.substring(0, 5000) || null,
-                        message_order: i + 1
-                    });
-                }
-            }
-            return JSON.stringify(out);
+                return JSON.stringify(out);
+            })();
         """)
 
-        if raw:
+        if messages_raw:
             try:
-                messages = json.loads(raw)
+                return json.loads(messages_raw)
             except (json.JSONDecodeError, TypeError):
                 pass
+        return []
 
-        return messages
+    def _upsert_conversation(self, conn, conv: dict, message_count: int) -> int:
+        """Insert or update conversation, return DB id."""
+        existing = conn.execute(
+            "SELECT id FROM conversations WHERE external_id = ?",
+            (conv["external_id"],),
+        ).fetchone()
 
-    def _collect_artifacts(self, tab: CDPTab, conversation_id: int, tracker: SyncTracker):
-        """Find and download any artifacts in the conversation."""
-        # Look for download buttons or artifact indicators
-        artifacts = tab.js("""
-            var downloads = document.querySelectorAll(
-                'a[download], button[aria-label*="download"], [class*="artifact"] a'
-            );
-            var out = [];
-            for (var i = 0; i < downloads.length; i++) {
-                var el = downloads[i];
-                var name = el.getAttribute('download') || el.textContent.trim() || 'artifact';
-                var href = el.getAttribute('href') || '';
-                out.push({name: name, href: href});
+        if existing:
+            conn.execute(
+                "UPDATE conversations SET title = ?, list_position = ?, "
+                "message_count = ?, is_pinned = ?, last_updated = datetime('now') "
+                "WHERE id = ?",
+                (conv["title"], conv["position"], message_count,
+                 1 if conv.get("is_pinned") else 0, existing["id"]),
+            )
+            conn.commit()
+            return existing["id"]
+        else:
+            cursor = conn.execute(
+                "INSERT INTO conversations (external_id, title, url, list_position, "
+                "message_count, is_pinned) VALUES (?, ?, ?, ?, ?, ?)",
+                (conv["external_id"], conv["title"], conv["url"],
+                 conv["position"], message_count,
+                 1 if conv.get("is_pinned") else 0),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def _save_messages(self, conn, conv_db_id: int, messages: list[dict]) -> int:
+        """Save messages, skipping duplicates by message_id. Returns count of new messages."""
+        new_count = 0
+        for msg in messages:
+            existing = conn.execute(
+                "SELECT id FROM messages WHERE conversation_id = ? AND message_id = ?",
+                (conv_db_id, msg["message_id"]),
+            ).fetchone()
+
+            if not existing:
+                conn.execute(
+                    "INSERT INTO messages (conversation_id, message_id, role, content, "
+                    "thinking_block, sources, code_blocks, message_order) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (conv_db_id, msg["message_id"], msg["role"],
+                     msg["content"], msg.get("thinking_block", ""),
+                     msg.get("sources", ""), msg.get("code_blocks", ""),
+                     msg["message_order"]),
+                )
+                new_count += 1
+
+        conn.commit()
+        return new_count
+
+    # ── UI Manifest ───────────────────────────────────────────────
+
+    def get_widgets(self) -> list[WidgetDefinition]:
+        return [
+            WidgetDefinition(
+                name="stats",
+                title="ChatGPT",
+                display_type="stat_cards",
+                data_query="",
+                refresh_seconds=600,
+                size="small",
+                click_action="skill_page",
+            ),
+            WidgetDefinition(
+                name="recent",
+                title="Recent ChatGPT Conversations",
+                display_type="timeline",
+                data_query=(
+                    "SELECT title, url, message_count, last_updated "
+                    "FROM conversations ORDER BY last_updated DESC LIMIT 8"
+                ),
+                refresh_seconds=300,
+                size="medium",
+                click_action="skill_page#conversations",
+            ),
+        ]
+
+    def get_page_sections(self) -> list[PageSection]:
+        return [
+            PageSection(
+                name="stats",
+                title="Overview",
+                display_type="stat_cards",
+                data_query="",
+                position=0,
+            ),
+            PageSection(
+                name="pinned",
+                title="Pinned Conversations",
+                display_type="list",
+                data_query=(
+                    "SELECT title, url, message_count, last_updated "
+                    "FROM conversations WHERE is_pinned = 1 "
+                    "ORDER BY last_updated DESC"
+                ),
+                position=1,
+                collapsible=True,
+            ),
+            PageSection(
+                name="conversations",
+                title="All Conversations",
+                display_type="timeline",
+                data_query=(
+                    "SELECT title, url, message_count, last_updated, discovered_date "
+                    "FROM conversations ORDER BY last_updated DESC"
+                ),
+                position=2,
+                paginated=True,
+                page_size=20,
+            ),
+            PageSection(
+                name="search",
+                title="Search Messages",
+                display_type="search",
+                data_query="",
+                position=3,
+            ),
+        ]
+
+    def get_notification_rules(self) -> list[NotificationRule]:
+        return [
+            NotificationRule(
+                event="after_collection",
+                condition="items_new > 0",
+                title_template="{items_new} new ChatGPT conversations",
+                message_template="Collected {items_new} new conversations, {items_updated} updated",
+                level="info",
+                link_to="/skill/chatgpt_history",
+            ),
+            NotificationRule(
+                event="after_collection",
+                condition="items_found == 0 and previous_count > 0",
+                title_template="ChatGPT: No conversations found",
+                message_template="Previously had {previous_count} conversations. Site may have changed.",
+                level="warning",
+                link_to="/skill/chatgpt_history",
+            ),
+            NotificationRule(
+                event="on_login_fail",
+                condition="True",
+                title_template="ChatGPT: Sign-in required",
+                message_template="Please sign in to ChatGPT to continue collecting",
+                level="action_required",
+                link_to="/settings",
+            ),
+        ]
+
+    def get_stats(self, conn) -> list[dict]:
+        total = conn.execute("SELECT COUNT(*) as c FROM conversations").fetchone()["c"]
+        pinned = conn.execute(
+            "SELECT COUNT(*) as c FROM conversations WHERE is_pinned = 1"
+        ).fetchone()["c"]
+        total_msgs = conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"]
+        user_msgs = conn.execute(
+            "SELECT COUNT(*) as c FROM messages WHERE role = 'user'"
+        ).fetchone()["c"]
+        return [
+            {"label": "Conversations", "value": total},
+            {"label": "Pinned", "value": pinned},
+            {"label": "Messages", "value": total_msgs},
+            {"label": "Your Messages", "value": user_msgs},
+        ]
+
+    def get_search_results(self, conn, query: str, limit: int = 20) -> list[dict]:
+        rows = conn.execute(
+            "SELECT m.content, m.role, m.sources, c.title, c.url, c.last_updated "
+            "FROM messages_fts f "
+            "JOIN messages m ON m.id = f.rowid "
+            "JOIN conversations c ON c.id = m.conversation_id "
+            "WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?",
+            (query, limit),
+        ).fetchall()
+        return [
+            {
+                "type": "message",
+                "title": r["title"],
+                "snippet": (r["content"] or "")[:200],
+                "url": r["url"],
+                "date": r["last_updated"],
+                "source": "chatgpt_history",
+                "role": r["role"],
             }
-            return JSON.stringify(out);
-        """)
-
-        if artifacts:
-            try:
-                for art in json.loads(artifacts):
-                    if art["name"] and art["name"] != "artifact":
-                        tracker.add_artifact(
-                            conversation_id=conversation_id,
-                            filename=art["name"],
-                            content=None,  # We store the reference, not the content
-                            file_path=art.get("href"),
-                        )
-            except (json.JSONDecodeError, TypeError):
-                pass
+            for r in rows
+        ]

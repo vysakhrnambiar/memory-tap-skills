@@ -1,37 +1,37 @@
 {
-  "manifest_version": 1,
-  "min_app_version": "0.1.0",
+  "manifest_version": 2,
+  "min_app_version": "0.2.0",
   "repo": "vysakhrnambiar/memory-tap-skills",
   "skills": [
     {
       "name": "youtube_history",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "file": "youtube_history.py",
       "target_site": "youtube.com",
       "auth_provider": "google",
-      "description": "Collects YouTube watch history — titles, descriptions, top comments",
+      "description": "Collects YouTube watch history - titles, descriptions, top comments, watch progress",
       "schedule_hours": 3,
-      "checksum": ""
+      "checksum": "sha256:00e5b0cd61d269389aa18234d8e7feba49cb3751c2373f442e4de824e461433f"
     },
     {
       "name": "chatgpt_history",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "file": "chatgpt_history.py",
       "target_site": "chatgpt.com",
       "auth_provider": "openai",
-      "description": "Collects ChatGPT conversation history — all messages, thinking blocks, artifacts",
+      "description": "Collects ChatGPT conversations - messages, sources, code blocks",
       "schedule_hours": 3,
-      "checksum": ""
+      "checksum": "sha256:d04b943adacd1f07768b32a4fd550d0a1569eda7141f6912f09cabe8027a3137"
     },
     {
       "name": "gemini_history",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "file": "gemini_history.py",
       "target_site": "gemini.google.com",
       "auth_provider": "google",
-      "description": "Collects Gemini conversation history — all messages, thinking blocks",
+      "description": "Collects Gemini conversations - messages, thinking blocks, sources",
       "schedule_hours": 3,
-      "checksum": ""
+      "checksum": "sha256:1b93470abf22084c64096eb4ee7cc98a1f104ceaf3e7044fa0eea7e06385cbae"
     }
   ]
 }
