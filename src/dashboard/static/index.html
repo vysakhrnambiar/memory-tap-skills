@@ -305,7 +305,7 @@
                     ${items.map(item => `
                         <div class="timeline-item">
                             <div class="item-title">${esc(item.title || '')}</div>
-                            <div class="item-meta">${esc(item.channel || item.source || '')} ${item.duration ? '&middot; ' + esc(item.duration) : ''}</div>
+                            <div class="item-meta">${esc(item.channel || item.source || '')} ${item.duration ? '&middot; ' + formatDuration(item.duration, item.watch_percent) : ''}</div>
                         </div>
                     `).join('')}
                 </div>
@@ -649,11 +649,22 @@
         function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
         function formatDate(d) {
             if (!d) return '';
+            // Handle both "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS" formats
+            const dateOnly = d.includes(' ') ? d.split(' ')[0] : d.includes('T') ? d.split('T')[0] : d;
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return d; // Return as-is if not a date
             const today = new Date().toISOString().slice(0,10);
             const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
-            if (d === today) return 'Today';
-            if (d === yesterday) return 'Yesterday';
-            return new Date(d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+            if (dateOnly === today) return 'Today';
+            if (dateOnly === yesterday) return 'Yesterday';
+            return new Date(dateOnly+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+        }
+        function formatDuration(d, watchPercent) {
+            if (!d) return '';
+            let s = d + ' min';
+            if (watchPercent !== undefined && watchPercent !== null && watchPercent < 100) {
+                s += ' · watched ' + watchPercent + '%';
+            }
+            return s;
         }
         function timeAgo(iso) {
             if (!iso) return '';

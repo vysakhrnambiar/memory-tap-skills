@@ -129,18 +129,40 @@ async def api_toggle_skill(name: str):
     return {"name": name, "enabled": row["enabled"] if row else 0}
 
 
+_running_skills: dict = {}  # name -> threading.Thread
+
 @app.post("/api/skills/{name}/run")
 async def api_run_skill(name: str):
-    """Trigger immediate skill run."""
+    """Trigger immediate skill run in background thread."""
     logger.info("API: run_skill(%s) — user triggered manual run", name)
     if not _scheduler:
         return JSONResponse({"error": "Scheduler not initialized"}, status_code=500)
-    result = _scheduler.run_skill(name)
-    if result is None:
-        return JSONResponse({"error": f"Skill '{name}' not found"}, status_code=404)
-    logger.info("API: run_skill(%s) — completed: found=%s, new=%s, error=%s",
-                name, result.get("items_found"), result.get("items_new"), result.get("error"))
-    return result
+    if name in _running_skills and _running_skills[name].is_alive():
+        return JSONResponse({"status": "already_running", "message": f"{name} is already running"})
+
+    import threading
+
+    def _run_in_bg():
+        try:
+            result = _scheduler.run_skill(name)
+            if result:
+                logger.info("API: run_skill(%s) — completed: found=%s, new=%s, error=%s",
+                            name, result.get("items_found"), result.get("items_new"), result.get("error"))
+        except Exception as e:
+            logger.error("API: run_skill(%s) — background error: %s", name, e)
+        finally:
+            _running_skills.pop(name, None)
+
+    t = threading.Thread(target=_run_in_bg, daemon=True)
+    _running_skills[name] = t
+    t.start()
+    return {"status": "started", "message": f"{name} is now running in background"}
+
+@app.get("/api/skills/{name}/running")
+async def api_skill_running(name: str):
+    """Check if a skill is currently running."""
+    running = name in _running_skills and _running_skills[name].is_alive()
+    return {"running": running}
 
 
 @app.post("/api/skills/{name}/login")
@@ -381,8 +403,8 @@ async def api_get_widget_data(skill_name: str, widget_name: str):
     if not widget_def:
         return JSONResponse({"error": "Widget not found"}, status_code=404)
 
-    # If no query, use get_stats()
-    if widget_def.data_query is None:
+    # If no query (None or empty string), use get_stats()
+    if not widget_def.data_query:
         try:
             conn = _scheduler.skill_db_mgr.get_connection(skill_name)
             data = skill.get_stats(conn)
