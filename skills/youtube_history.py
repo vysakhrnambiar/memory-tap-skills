@@ -13,9 +13,9 @@ Stop strategy: DATE_GROUP
 - History groups by: Today, Yesterday, day names, then "Mon DD"
 - Stop when: current date_group <= last_collected_date_group AND all videos in it are known
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 """
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 import json
 import logging
@@ -245,16 +245,38 @@ class YouTubeHistorySkill(BaseSkill):
         - Not logged in: no avatar, title is just "YouTube", "Sign in" text
         """
         tab.navigate("https://www.youtube.com/feed/history")
-        wait_human(2, 4)
+        wait_human(3, 5)
 
+        # Primary: avatar button
         avatar = tab.query_selector("button#avatar-btn")
         if avatar and avatar.get("visible"):
             logger.info("YouTube: logged in (avatar button found)")
             return True
 
+        # Secondary: page title contains "Watch history" (loads only when authenticated)
+        title = tab.get_title() or ""
+        if "Watch history" in title:
+            logger.info("YouTube: logged in (page title contains 'Watch history')")
+            return True
+
+        # Tertiary: subscriptions visible in sidebar (only when logged in)
+        subs = tab.query_selector("[aria-label='Subscriptions']")
+        if subs:
+            logger.info("YouTube: logged in (Subscriptions sidebar found)")
+            return True
+
+        # Negative: "Sign in" text visible
         if tab.has_text("Sign in"):
             logger.info("YouTube: not logged in (Sign in text visible)")
             return False
+
+        # Still unclear — wait longer for slow-loading avatar and retry
+        logger.info("YouTube: login unclear, waiting extra time for avatar...")
+        wait_human(3, 5)
+        avatar = tab.query_selector("button#avatar-btn")
+        if avatar and avatar.get("visible"):
+            logger.info("YouTube: logged in (avatar found after extra wait)")
+            return True
 
         logger.info("YouTube: login unclear, treating as not logged in")
         return False
