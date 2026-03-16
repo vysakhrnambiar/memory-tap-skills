@@ -5,33 +5,33 @@
   "skills": [
     {
       "name": "youtube_history",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "file": "youtube_history.py",
       "target_site": "youtube.com",
       "auth_provider": "google",
       "description": "Collects YouTube watch history - titles, descriptions, top comments, watch progress",
       "schedule_hours": 3,
-      "checksum": "sha256:4669e4aede13ea3fd2513edeaccc8bdba28486c5a61011a05804350d76b47060"
+      "checksum": "sha256:75922c2ab85099463056cefe5f55666767a0f38301e69cf946459a0d8be6f9c4"
     },
     {
       "name": "chatgpt_history",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "file": "chatgpt_history.py",
       "target_site": "chatgpt.com",
       "auth_provider": "openai",
       "description": "Collects ChatGPT conversations - messages, sources, code blocks",
       "schedule_hours": 3,
-      "checksum": "sha256:f230cde5ab78926cd89320624f0a7a34dfd25d71967b789ff72b6ef12be024c4"
+      "checksum": "sha256:51f0a82f028634e1687d369bdf40987683209e3e7a89fa35ab3b1bdd4ab938cc"
     },
     {
       "name": "gemini_history",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "file": "gemini_history.py",
       "target_site": "gemini.google.com",
       "auth_provider": "google",
       "description": "Collects Gemini conversations - messages, thinking blocks, sources",
       "schedule_hours": 3,
-      "checksum": "sha256:72d3938bcd7d601482af6890928142275dda9feb16ec4bbd02df142db9537709"
+      "checksum": "sha256:75ac6d4bc1ea0e0ec1d5bdef676ee4de09d20fc2d7441b7ea4566f5852ab5d85"
     }
   ]
 }

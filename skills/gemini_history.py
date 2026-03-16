@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 """
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 import json
 import logging
@@ -531,7 +531,7 @@ class GeminiHistorySkill(BaseSkill):
                 title="Conversations with Thinking",
                 display_type="list",
                 data_query=(
-                    "SELECT title, url, message_count, last_updated "
+                    "SELECT id, title, url, message_count, last_updated"
                     "FROM conversations WHERE has_thinking = 1 "
                     "ORDER BY last_updated DESC LIMIT 5"
                 ),
@@ -544,7 +544,7 @@ class GeminiHistorySkill(BaseSkill):
                 title="Recent Gemini Conversations",
                 display_type="timeline",
                 data_query=(
-                    "SELECT title, url, message_count, last_updated "
+                    "SELECT id, title, url, message_count, last_updated"
                     "FROM conversations ORDER BY last_updated DESC LIMIT 8"
                 ),
                 refresh_seconds=300,
@@ -567,7 +567,7 @@ class GeminiHistorySkill(BaseSkill):
                 title="Conversations with Thinking Blocks",
                 display_type="list",
                 data_query=(
-                    "SELECT title, url, message_count, last_updated "
+                    "SELECT id, title, url, message_count, last_updated"
                     "FROM conversations WHERE has_thinking = 1 "
                     "ORDER BY last_updated DESC"
                 ),

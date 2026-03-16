@@ -359,6 +359,7 @@
             return `<div class="stat-grid">${data.map(s => `<div class="card stat-card"><div class="number">${s.value}</div><div class="label">${esc(s.label)}</div></div>`).join('')}</div>`;
         }
 
+        var _timelineSkill = ''; // set before calling renderTimeline for conversation click support
         function renderTimeline(data) {
             if (!data.length) return '<div class="empty">No data yet</div>';
             // Group by date if items have a date field
@@ -372,13 +373,17 @@
             return Object.entries(groups).map(([date, items]) => `
                 <div class="timeline-group">
                     <div class="timeline-date">${formatDate(date)}</div>
-                    ${items.map(item => `
-                        <div class="timeline-item${item.id && item.conversation_id !== undefined ? ' clickable' : ''}"
-                             ${item.id && item.conversation_id !== undefined ? `onclick="toggleMessages('${item._skill || ''}', ${item.id}, this)"` : ''}>
+                    ${items.map(item => {
+                        const hasMessages = item.id && item.message_count && item.message_count > 0;
+                        const skillName = item._skill || _timelineSkill || '';
+                        return `
+                        <div class="timeline-item${hasMessages ? ' clickable' : ''}"
+                             ${hasMessages ? `onclick="event.preventDefault(); toggleMessages('${skillName}', ${item.id}, this)"` : ''}>
                             <div class="item-title">${esc(item.title || '')}</div>
                             <div class="item-meta">${esc(item.channel || item.source || '')} ${item.duration ? '&middot; ' + formatDuration(item.duration, item.watch_percent) : ''} ${item.message_count ? '&middot; ' + item.message_count + ' msgs' : ''}</div>
                             <div class="messages-container" style="display:none"></div>
-                        </div>
+                        </div>`;
+                    }).join('')}
                     `).join('')}
                 </div>
             `).join('');
@@ -561,9 +566,10 @@
                     const wid = 'widget-' + w.skill_name + '-' + w.name;
                     const el = document.querySelector(`#${wid} .widget-data`);
                     if (el && result.data) {
+                        _timelineSkill = w.skill_name;
                         el.innerHTML = renderByType(result.display_type, result.data);
+                        _timelineSkill = '';
                         el.classList.remove('loading');
-                        // Store load time for "Updated X ago" display
                         widgetLoadTimes[wid] = new Date().toISOString();
                         updateWidgetTime(wid);
                     }

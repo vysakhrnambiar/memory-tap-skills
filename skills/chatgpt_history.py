@@ -17,9 +17,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 Scope: Regular chats (/c/) only. Projects (/g/g-p-), GPTs (/g/g-), Group chats (/gg/) excluded.
 Text only — no images, artifacts, files.
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 """
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 import json
 import logging
@@ -459,7 +459,7 @@ class ChatGPTHistorySkill(BaseSkill):
                 title="Recent ChatGPT Conversations",
                 display_type="timeline",
                 data_query=(
-                    "SELECT title, url, message_count, last_updated "
+                    "SELECT id, title, url, message_count, last_updated "
                     "FROM conversations ORDER BY last_updated DESC LIMIT 8"
                 ),
                 refresh_seconds=300,
@@ -482,7 +482,7 @@ class ChatGPTHistorySkill(BaseSkill):
                 title="Pinned Conversations",
                 display_type="list",
                 data_query=(
-                    "SELECT title, url, message_count, last_updated "
+                    "SELECT id, title, url, message_count, last_updated "
                     "FROM conversations WHERE is_pinned = 1 "
                     "ORDER BY last_updated DESC"
                 ),
@@ -494,7 +494,7 @@ class ChatGPTHistorySkill(BaseSkill):
                 title="All Conversations",
                 display_type="timeline",
                 data_query=(
-                    "SELECT title, url, message_count, last_updated, discovered_date "
+                    "SELECT id, title, url, message_count, last_updated, discovered_date "
                     "FROM conversations ORDER BY last_updated DESC"
                 ),
                 position=2,
