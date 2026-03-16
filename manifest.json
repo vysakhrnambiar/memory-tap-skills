@@ -11,7 +11,7 @@
       "auth_provider": "google",
       "description": "Collects YouTube watch history - titles, descriptions, top comments, watch progress",
       "schedule_hours": 3,
-      "checksum": "sha256:42781cec420ad109ffe59e02302d5a230b10836f1a9695630e638e3752817cf6"
+      "checksum": "sha256:0214b1e5208336ccebf1121804945dfd9330387b7bf04f2273031cccfe2bb2c8"
     },
     {
       "name": "chatgpt_history",
@@ -21,7 +21,7 @@
       "auth_provider": "openai",
       "description": "Collects ChatGPT conversations - messages, sources, code blocks",
       "schedule_hours": 3,
-      "checksum": "sha256:86c77e640f63a4e48e2d97570c84d6e5c7956cd386850eb0f519692347d94d28"
+      "checksum": "sha256:979be3235b857aab524a08f1dc0652cb32e38a9ac038a32227beae86662f1755"
     },
     {
       "name": "gemini_history",
@@ -31,7 +31,7 @@
       "auth_provider": "google",
       "description": "Collects Gemini conversations - messages, thinking blocks, sources",
       "schedule_hours": 3,
-      "checksum": "sha256:d5ca3e53326e5f03a162fbad903daedb43ed56c0f58ccfa2a513d917b7a1b9d6"
+      "checksum": "sha256:a0d36aa46acb9d0fa58a6f9fe922471a144512dea6f201a1bd51b35d9677955a"
     }
   ]
 }

@@ -775,7 +775,7 @@ class YouTubeHistorySkill(BaseSkill):
                 display_type="progress_list",
                 data_query=(
                     "SELECT title, channel, url, watch_percent, duration "
-                    "FROM videos WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0 "
+                    "FROM videos WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0 AND title != '' "
                     "ORDER BY updated_at DESC LIMIT 5"
                 ),
                 refresh_seconds=600,
@@ -811,7 +811,7 @@ class YouTubeHistorySkill(BaseSkill):
                 display_type="progress_list",
                 data_query=(
                     "SELECT title, channel, url, watch_percent, duration, watched_date "
-                    "FROM videos WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0 "
+                    "FROM videos WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0 AND title != '' "
                     "ORDER BY updated_at DESC"
                 ),
                 position=1,
@@ -880,7 +880,7 @@ class YouTubeHistorySkill(BaseSkill):
         total_s = conn.execute("SELECT COUNT(*) as c FROM shorts").fetchone()["c"]
         unfinished = conn.execute(
             "SELECT COUNT(*) as c FROM videos "
-            "WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0"
+            "WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0 AND title != ''"
         ).fetchone()["c"]
         completed = conn.execute(
             "SELECT COUNT(*) as c FROM videos WHERE watch_percent = 100"
