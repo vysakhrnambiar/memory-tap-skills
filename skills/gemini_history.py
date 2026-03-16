@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 """
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 import json
 import logging
