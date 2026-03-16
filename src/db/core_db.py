@@ -429,10 +429,20 @@ def finish_sync_log(log_id: int, items_found: int, items_new: int,
 # --- Widget Config helpers ---
 
 def get_widget_config(db_path: str | None = None) -> list[dict]:
-    """Get all widget configs for home screen."""
+    """Get all widget configs for home screen (visible only)."""
     conn = get_core_connection(db_path)
     rows = conn.execute(
         "SELECT * FROM widget_config WHERE visible = 1 ORDER BY position_y, position_x"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_all_widget_config(db_path: str | None = None) -> list[dict]:
+    """Get ALL widget configs including hidden ones (for customize panel)."""
+    conn = get_core_connection(db_path)
+    rows = conn.execute(
+        "SELECT * FROM widget_config ORDER BY position_y, position_x"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

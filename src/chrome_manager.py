@@ -318,6 +318,54 @@ class ChromeManager:
             time.sleep(0.5)
         return False
 
+    def cleanup_tabs(self):
+        """Close all tabs except about:blank on startup.
+
+        Called right after Chrome is launched/confirmed running to prevent
+        tab accumulation across restarts. Stale login tabs, leftover
+        skill tabs, etc. are all closed. The scheduler will recreate
+        persistent skill tabs as needed.
+        """
+        try:
+            resp = requests.get(f"{self.cdp_base_url}/json", timeout=5)
+            tabs = [t for t in resp.json() if t.get("type") == "page"]
+        except Exception as e:
+            logger.warning("cleanup_tabs: could not list tabs: %s", e)
+            return
+
+        if not tabs:
+            return
+
+        # Keep at least one blank tab so Chrome doesn't close
+        has_blank = any(
+            t.get("url") in ("about:blank", "chrome://newtab/", "")
+            for t in tabs
+        )
+        if not has_blank:
+            # Create a blank tab first so Chrome has something to keep
+            try:
+                for method in [requests.put, requests.get]:
+                    r = method(f"{self.cdp_base_url}/json/new", timeout=5)
+                    if r.status_code == 200:
+                        logger.info("cleanup_tabs: created blank tab to keep Chrome alive")
+                        break
+            except Exception:
+                pass
+
+        closed = 0
+        for t in tabs:
+            tab_url = t.get("url", "")
+            if tab_url in ("about:blank", "chrome://newtab/", ""):
+                continue
+            try:
+                requests.get(f"{self.cdp_base_url}/json/close/{t['id']}", timeout=3)
+                closed += 1
+            except Exception:
+                pass
+
+        if closed:
+            logger.info("cleanup_tabs: closed %d leftover tab(s) from previous session", closed)
+
     def open_headed(self, url: str, reuse_blank: bool = False):
         """Open a URL in the Chrome instance for user interaction (login etc).
 
@@ -344,7 +392,7 @@ class ChromeManager:
             except Exception:
                 pass
 
-        # Create a new tab
+        # Create a new blank tab (no URL param to avoid Chrome opening a new window)
         if not tab_info:
             for method in [requests.put, requests.get]:
                 try:

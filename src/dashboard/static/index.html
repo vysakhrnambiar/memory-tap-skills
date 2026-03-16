@@ -153,6 +153,63 @@
 
         .loading { text-align: center; padding: 40px; color: #666; }
         .empty { text-align: center; padding: 30px; color: #555; font-size: 14px; }
+
+        /* Chat */
+        .chat-container { display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 400px; }
+        .chat-messages { flex: 1; overflow-y: auto; padding: 12px 0; }
+        .chat-msg { padding: 10px 14px; margin-bottom: 8px; border-radius: 10px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-width: 85%; }
+        .chat-msg.user { background: #1a1a3e; margin-left: auto; border-bottom-right-radius: 2px; }
+        .chat-msg.assistant { background: #1a1a1a; margin-right: auto; border-bottom-left-radius: 2px; }
+        .chat-msg .msg-role { font-size: 11px; color: #888; margin-bottom: 4px; font-weight: 600; }
+        .chat-sources { margin-top: 8px; padding-top: 8px; border-top: 1px solid #333; }
+        .chat-sources .source-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin: 2px 4px 2px 0; }
+        .chat-sources .source-tag.youtube { background: #ff000022; color: #ff4444; }
+        .chat-sources .source-tag.chatgpt { background: #10a37f22; color: #10a37f; }
+        .chat-sources .source-tag.gemini { background: #4285f422; color: #4285f4; }
+        .chat-input-row { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid #2a2a2a; }
+        .chat-input-row input { flex: 1; padding: 12px 16px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #e0e0e0; font-size: 14px; }
+        .chat-input-row input:focus { outline: none; border-color: #7c3aed; }
+        .chat-typing { color: #888; font-size: 13px; padding: 8px 14px; font-style: italic; }
+
+        /* Search + Chat layout */
+        .search-chat-tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+        .search-chat-tab { padding: 8px 16px; cursor: pointer; border: none; background: none; color: #888; font-size: 13px; border-bottom: 2px solid transparent; }
+        .search-chat-tab:hover { color: #ccc; }
+        .search-chat-tab.active { color: #7c3aed; border-bottom-color: #7c3aed; }
+        .sc-panel { display: none; }
+        .sc-panel.active { display: block; }
+
+        /* Source badge in search results */
+        .sr-source { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; margin-right: 6px; }
+        .sr-source.youtube_history { background: #ff000022; color: #ff4444; }
+        .sr-source.chatgpt_history { background: #10a37f22; color: #10a37f; }
+        .sr-source.gemini_history { background: #4285f422; color: #4285f4; }
+
+        /* Customize modal */
+        .customize-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 500; display: flex; align-items: center; justify-content: center; }
+        .customize-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; width: 500px; max-width: 90%; max-height: 80vh; overflow-y: auto; padding: 24px; }
+        .customize-box h3 { margin-bottom: 16px; }
+        .customize-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #222; }
+        .customize-item label { flex: 1; font-size: 14px; cursor: pointer; }
+        .customize-item input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+        .customize-item .drag-handle { color: #555; cursor: grab; font-size: 16px; }
+        .customize-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+        /* Widget header with refresh */
+        .widget-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .widget-header .widget-title { margin-bottom: 0; }
+        .widget-meta { display: flex; align-items: center; gap: 6px; }
+        .widget-updated { font-size: 10px; color: #555; }
+        .widget-refresh { background: none; border: none; color: #555; cursor: pointer; font-size: 13px; padding: 2px 4px; border-radius: 4px; }
+        .widget-refresh:hover { color: #7c3aed; background: #7c3aed22; }
+
+        /* Home page toolbar */
+        .home-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .home-toolbar h2 { font-size: 18px; }
+
+        /* Skill page link in widgets */
+        .skill-link { color: #7c3aed; cursor: pointer; font-size: 12px; }
+        .skill-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -197,6 +254,7 @@
             <h1 onclick="navigate('home')"><span>Memory</span> Tap</h1>
             <div class="header-right">
                 <button class="nav-btn" id="nav-home" onclick="navigate('home')">Home</button>
+                <button class="nav-btn" id="nav-search" onclick="navigate('search')">Search &amp; Chat</button>
                 <button class="nav-btn" id="nav-settings" onclick="navigate('settings')">Settings</button>
                 <div class="bell" onclick="toggleNotifs()">
                     <span>&#128276;</span>
@@ -229,6 +287,7 @@
             if (navBtn) navBtn.classList.add('active');
 
             if (page === 'home') renderHome();
+            else if (page === 'search') renderSearchChat();
             else if (page === 'settings') renderSettings();
             else if (page === 'skill') renderSkillPage(data);
         }
@@ -412,6 +471,7 @@
                 case 'grid': return renderGrid(data);
                 case 'table': return renderTable(data);
                 case 'conversation': return renderConversation(data);
+                case 'search': return renderTable(data); // search sections use table layout
                 default: return `<div class="empty">Unknown display type: ${displayType}</div>`;
             }
         }
@@ -460,12 +520,27 @@
                 } else {
                     let cards = '';
                     for (const w of widgets) {
-                        cards += `<div class="widget ${w.size}" onclick="navigate('skill','${esc(w.skill_name)}')" id="widget-${w.skill_name}-${w.name}">
-                            <div class="widget-title">${esc(w.title)}</div>
-                            <div class="widget-data loading">Loading...</div>
+                        if (w.visible === 0) continue; // respect widget config visibility
+                        const wid = 'widget-' + w.skill_name + '-' + w.name;
+                        cards += `<div class="widget ${w.size}" id="${wid}">
+                            <div class="widget-header">
+                                <div class="widget-title">
+                                    <span class="skill-link" onclick="event.stopPropagation();navigate('skill','${esc(w.skill_name)}')">${esc(w.skill_name.replace(/_/g,' '))}</span>
+                                     &middot; ${esc(w.title)}
+                                </div>
+                                <div class="widget-meta">
+                                    <span class="widget-updated" id="${wid}-time"></span>
+                                    <button class="widget-refresh" title="Refresh" onclick="event.stopPropagation();refreshWidget('${esc(w.skill_name)}','${esc(w.name)}')">&#8635;</button>
+                                </div>
+                            </div>
+                            <div class="widget-data loading" onclick="navigate('skill','${esc(w.skill_name)}')">Loading...</div>
                         </div>`;
                     }
-                    widgetHtml = `<div class="widget-grid">${cards}</div>`;
+                    widgetHtml = `<div class="home-toolbar">
+                        <h2>Dashboard</h2>
+                        <button class="btn" onclick="showCustomize()">Customize</button>
+                    </div>
+                    <div class="widget-grid">${cards}</div>`;
                     // Load widget data async
                     setTimeout(() => loadWidgetData(widgets), 100);
                 }
@@ -474,17 +549,128 @@
             el.innerHTML = wizardHtml + widgetHtml;
         }
 
+        // Track when each widget was last loaded
+        const widgetLoadTimes = {};
+
         async function loadWidgetData(widgets) {
             for (const w of widgets) {
+                if (w.visible === 0) continue;
                 try {
                     const resp = await fetch(`/api/widgets/${w.skill_name}/${w.name}/data`);
                     const result = await resp.json();
-                    const el = document.querySelector(`#widget-${w.skill_name}-${w.name} .widget-data`);
+                    const wid = 'widget-' + w.skill_name + '-' + w.name;
+                    const el = document.querySelector(`#${wid} .widget-data`);
                     if (el && result.data) {
                         el.innerHTML = renderByType(result.display_type, result.data);
                         el.classList.remove('loading');
+                        // Store load time for "Updated X ago" display
+                        widgetLoadTimes[wid] = new Date().toISOString();
+                        updateWidgetTime(wid);
                     }
                 } catch(e) {}
+            }
+        }
+
+        function updateWidgetTime(wid) {
+            const timeEl = document.getElementById(wid + '-time');
+            const loadTime = widgetLoadTimes[wid];
+            if (timeEl && loadTime) {
+                timeEl.textContent = 'Updated ' + timeAgo(loadTime);
+            }
+        }
+
+        // Refresh a single widget's data
+        async function refreshWidget(skillName, widgetName) {
+            const wid = 'widget-' + skillName + '-' + widgetName;
+            const el = document.querySelector(`#${wid} .widget-data`);
+            const btn = document.querySelector(`#${wid} .widget-refresh`);
+            if (btn) { btn.style.animation = 'spin 0.5s linear'; }
+            if (el) el.innerHTML = '<div class="loading" style="padding:10px">Refreshing...</div>';
+            try {
+                const resp = await fetch(`/api/widgets/${skillName}/${widgetName}/data`);
+                const result = await resp.json();
+                if (el && result.data) {
+                    el.innerHTML = renderByType(result.display_type, result.data);
+                    widgetLoadTimes[wid] = new Date().toISOString();
+                    updateWidgetTime(wid);
+                }
+            } catch(e) {
+                if (el) el.innerHTML = '<div class="empty">Refresh failed</div>';
+            }
+            if (btn) { btn.style.animation = ''; }
+        }
+
+        // Update all widget timestamps every 30s
+        setInterval(() => {
+            for (const wid of Object.keys(widgetLoadTimes)) {
+                updateWidgetTime(wid);
+            }
+        }, 30000);
+
+        // ============================================================
+        // Customize Widgets Modal (#16)
+        // ============================================================
+        async function showCustomize() {
+            try {
+                const resp = await fetch('/api/widgets/config');
+                const widgets = await resp.json();
+
+                let items = '';
+                widgets.forEach((w, i) => {
+                    const label = w.title || w.widget_name.replace(/_/g, ' ');
+                    const skill = w.skill_name.replace(/_/g, ' ');
+                    items += `<div class="customize-item" data-skill="${esc(w.skill_name)}" data-widget="${esc(w.widget_name)}">
+                        <span class="drag-handle">&#9776;</span>
+                        <input type="checkbox" id="cw-${i}" ${w.enabled ? 'checked' : ''}>
+                        <label for="cw-${i}">${esc(skill)} &mdash; ${esc(label)}</label>
+                    </div>`;
+                });
+
+                const overlay = document.createElement('div');
+                overlay.className = 'customize-overlay';
+                overlay.id = 'customize-modal';
+                overlay.innerHTML = `<div class="customize-box">
+                    <h3>Customize Widgets</h3>
+                    <p style="font-size:13px;color:#888;margin-bottom:16px">Toggle widgets on/off. All widgets are shown by default.</p>
+                    <div id="customize-list">${items}</div>
+                    <div class="customize-actions">
+                        <button class="btn" onclick="closeCustomize()">Cancel</button>
+                        <button class="btn primary" onclick="saveCustomize()">Save</button>
+                    </div>
+                </div>`;
+                document.body.appendChild(overlay);
+                overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCustomize(); });
+            } catch(e) {
+                alert('Failed to load widget config');
+            }
+        }
+
+        function closeCustomize() {
+            const modal = document.getElementById('customize-modal');
+            if (modal) modal.remove();
+        }
+
+        async function saveCustomize() {
+            const items = document.querySelectorAll('#customize-list .customize-item');
+            const widgets = [];
+            items.forEach((item, i) => {
+                widgets.push({
+                    skill_name: item.dataset.skill,
+                    widget_name: item.dataset.widget,
+                    enabled: item.querySelector('input[type="checkbox"]').checked ? 1 : 0,
+                    position: i,
+                });
+            });
+            try {
+                await fetch('/api/widgets/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({widgets}),
+                });
+                closeCustomize();
+                renderHome(); // Refresh home page to reflect changes
+            } catch(e) {
+                alert('Failed to save');
             }
         }
 
@@ -522,18 +708,38 @@
             el.innerHTML = '<div class="loading">Loading skill page...</div>';
 
             try {
-                const [pageResp, infoResp] = await Promise.all([
+                const [pageResp, infoResp, statsResp] = await Promise.all([
                     fetch(`/api/skills/${skillName}/page`),
                     fetch(`/api/skills/${skillName}`),
+                    fetch(`/api/skills/${skillName}/stats`),
                 ]);
                 const page = await pageResp.json();
                 const info = await infoResp.json();
+                let stats = null;
+                try { stats = await statsResp.json(); } catch(e) {}
 
                 let html = `<div class="back-btn" onclick="navigate('home')">&larr; Back</div>`;
-                html += `<h2 style="margin-bottom:20px">${esc(info.name || skillName)}</h2>`;
+                const displayName = (info.name || skillName).replace(/_/g, ' ');
+                html += `<h2 style="margin-bottom:6px">${esc(displayName)}</h2>`;
+                // Skill metadata line
+                if (info.version || info.last_sync_at) {
+                    html += `<div style="font-size:12px;color:#666;margin-bottom:16px">`;
+                    if (info.version) html += `v${esc(info.version)}`;
+                    if (info.last_sync_at) html += ` &middot; Last sync: ${timeAgo(info.last_sync_at)}`;
+                    if (info.login_status) {
+                        const color = info.login_status === 'logged_in' ? '#22c55e' : '#ef4444';
+                        html += ` &middot; <span style="color:${color}">${esc(info.login_status)}</span>`;
+                    }
+                    html += `</div>`;
+                }
 
+                // Stat cards at the top (#15)
+                if (stats && Array.isArray(stats) && stats.length > 0) {
+                    html += renderStatCards(stats);
+                }
+
+                // Render each section defined by the skill's UI manifest
                 for (const section of page.sections.sort((a,b) => a.position - b.position)) {
-                    const collapsed = section.collapsible ? '' : '';
                     html += `<div class="section">
                         <div class="section-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
                             <h3>${esc(section.title)}</h3>
@@ -545,11 +751,11 @@
                     </div>`;
                 }
 
-                // Search section
+                // Search section at the bottom
                 html += `<div class="section">
                     <h3 style="margin-bottom:12px">Search</h3>
                     <div class="search-box">
-                        <input type="text" id="skill-search-input" placeholder="Search ${esc(skillName)} data..." onkeydown="if(event.key==='Enter')doSkillSearch('${esc(skillName)}')">
+                        <input type="text" id="skill-search-input" placeholder="Search ${esc(skillName.replace(/_/g,' '))} data..." onkeydown="if(event.key==='Enter')doSkillSearch('${esc(skillName)}')">
                         <button class="btn primary" onclick="doSkillSearch('${esc(skillName)}')">Search</button>
                     </div>
                     <div id="skill-search-results"></div>
@@ -557,7 +763,7 @@
 
                 el.innerHTML = html;
 
-                // Load section data
+                // Load section data (each section rendered by its display_type)
                 for (const section of page.sections) {
                     loadSectionData(skillName, section);
                 }
@@ -572,6 +778,10 @@
                 const result = await resp.json();
                 const el = document.getElementById(`section-${section.name}`);
                 if (el && result.data) {
+                    // Tag each data item with the skill name for conversation toggles
+                    if (Array.isArray(result.data)) {
+                        result.data.forEach(item => { item._skill = skillName; });
+                    }
                     let html = renderByType(result.display_type, result.data);
                     if (section.paginated && result.data.length >= section.page_size) {
                         html += `<div style="text-align:center;margin-top:12px"><button class="btn" onclick="loadSectionData('${skillName}',${JSON.stringify(section)},${page+1})">Load more</button></div>`;
@@ -595,6 +805,152 @@
                     <div class="sr-snippet">${esc(r.snippet || '')}</div>
                 </div>
             `).join('');
+        }
+
+        // ============================================================
+        // Search & Chat Page
+        // ============================================================
+        let chatHistory = [];  // Client-side chat history [{role, content}, ...]
+        let chatBusy = false;
+
+        function renderSearchChat() {
+            const el = document.getElementById('page-content');
+            el.innerHTML = `
+                <h2 style="margin-bottom:16px">Search &amp; Chat</h2>
+                <div class="search-chat-tabs">
+                    <button class="search-chat-tab active" onclick="switchSCTab('search',this)">Search</button>
+                    <button class="search-chat-tab" onclick="switchSCTab('chat',this)">Chat with your data</button>
+                </div>
+
+                <!-- Search Panel -->
+                <div id="sc-search" class="sc-panel active">
+                    <div class="search-box">
+                        <input type="text" id="rag-search-input" placeholder="Search across YouTube, ChatGPT, Gemini..." onkeydown="if(event.key==='Enter')doRagSearch()">
+                        <button class="btn primary" onclick="doRagSearch()">Search</button>
+                    </div>
+                    <div id="rag-search-results"></div>
+                </div>
+
+                <!-- Chat Panel -->
+                <div id="sc-chat" class="sc-panel">
+                    <div class="chat-container">
+                        <div class="chat-messages" id="chat-messages">
+                            <div class="empty">Ask anything about your collected data. Memory Tap will search your YouTube history, ChatGPT conversations, and Gemini conversations to answer.</div>
+                        </div>
+                        <div id="chat-typing" class="chat-typing" style="display:none">Thinking...</div>
+                        <div class="chat-input-row">
+                            <input type="text" id="chat-input" placeholder="Ask about your data..." onkeydown="if(event.key==='Enter'&&!event.shiftKey)sendChat()">
+                            <button class="btn primary" id="chat-send-btn" onclick="sendChat()">Send</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function switchSCTab(tab, btn) {
+            document.querySelectorAll('.search-chat-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.sc-panel').forEach(p => p.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById('sc-' + tab).classList.add('active');
+        }
+
+        async function doRagSearch() {
+            const q = document.getElementById('rag-search-input').value.trim();
+            if (!q) return;
+            const el = document.getElementById('rag-search-results');
+            el.innerHTML = '<div class="loading">Searching...</div>';
+            try {
+                const resp = await fetch('/api/rag/search?q=' + encodeURIComponent(q) + '&limit=30');
+                const results = await resp.json();
+                if (!results.length) {
+                    el.innerHTML = '<div class="empty">No results found</div>';
+                    return;
+                }
+                el.innerHTML = results.map(r => {
+                    const sourceName = r.source === 'youtube_history' ? 'YouTube' :
+                                       r.source === 'chatgpt_history' ? 'ChatGPT' : 'Gemini';
+                    return '<div class="search-result">' +
+                        '<span class="sr-source ' + esc(r.source) + '">' + sourceName + '</span>' +
+                        '<span class="sr-title">' + esc(r.title || '') + '</span>' +
+                        (r.channel ? ' <span style="color:#666;font-size:12px">' + esc(r.channel) + '</span>' : '') +
+                        (r.date ? ' <span style="color:#555;font-size:11px">' + esc(r.date) + '</span>' : '') +
+                        (r.url ? ' <a href="' + esc(r.url) + '" target="_blank" style="font-size:11px">open</a>' : '') +
+                        '<div class="sr-snippet">' + esc(r.snippet || '') + '</div>' +
+                    '</div>';
+                }).join('');
+            } catch(e) {
+                el.innerHTML = '<div class="empty">Search failed: ' + esc(String(e)) + '</div>';
+            }
+        }
+
+        async function sendChat() {
+            if (chatBusy) return;
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            input.value = '';
+            chatBusy = true;
+            document.getElementById('chat-send-btn').disabled = true;
+
+            const messagesEl = document.getElementById('chat-messages');
+
+            // Clear placeholder if first message
+            if (chatHistory.length === 0) {
+                messagesEl.innerHTML = '';
+            }
+
+            // Add user message to display
+            messagesEl.innerHTML += '<div class="chat-msg user"><div class="msg-role">You</div>' + esc(message) + '</div>';
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+
+            // Show typing indicator
+            document.getElementById('chat-typing').style.display = 'block';
+
+            try {
+                const resp = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        message: message,
+                        history: chatHistory,
+                    }),
+                });
+                const data = await resp.json();
+
+                document.getElementById('chat-typing').style.display = 'none';
+
+                // Build sources HTML
+                let sourcesHtml = '';
+                if (data.sources && data.sources.length > 0) {
+                    sourcesHtml = '<div class="chat-sources"><span style="font-size:11px;color:#666">Sources used: </span>';
+                    for (const s of data.sources) {
+                        const cls = s.source === 'youtube_history' ? 'youtube' :
+                                    s.source === 'chatgpt_history' ? 'chatgpt' : 'gemini';
+                        const label = s.source === 'youtube_history' ? 'YouTube' :
+                                      s.source === 'chatgpt_history' ? 'ChatGPT' : 'Gemini';
+                        const link = s.url ? '<a href="' + esc(s.url) + '" target="_blank">' + esc(s.title || label) + '</a>' : esc(s.title || label);
+                        sourcesHtml += '<span class="source-tag ' + cls + '">' + link + '</span>';
+                    }
+                    sourcesHtml += '</div>';
+                }
+
+                // Add assistant message
+                messagesEl.innerHTML += '<div class="chat-msg assistant"><div class="msg-role">Memory Tap</div>' + esc(data.response || 'No response') + sourcesHtml + '</div>';
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+
+                // Update history
+                chatHistory.push({role: 'user', content: message});
+                chatHistory.push({role: 'assistant', content: data.response || ''});
+
+            } catch(e) {
+                document.getElementById('chat-typing').style.display = 'none';
+                messagesEl.innerHTML += '<div class="chat-msg assistant"><div class="msg-role">Memory Tap</div>Error: ' + esc(String(e)) + '</div>';
+            }
+
+            chatBusy = false;
+            document.getElementById('chat-send-btn').disabled = false;
+            input.focus();
         }
 
         // ============================================================

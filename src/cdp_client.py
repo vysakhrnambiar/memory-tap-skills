@@ -727,10 +727,15 @@ class CDPClient:
         return snapshot
 
     def new_tab(self, url: str = "about:blank") -> CDPTab:
-        """Create a new tab and optionally navigate to URL."""
+        """Create a new tab and optionally navigate to URL.
+
+        Uses /json/new without a URL param to create a blank tab in the
+        SAME window. Chrome's /json/new?url=X can open tabs in new windows;
+        creating blank first and then navigating via CDP avoids this.
+        """
         for method in [requests.put, requests.get]:
             try:
-                resp = method(f"{self.base_url}/json/new?url=about:blank", timeout=10)
+                resp = method(f"{self.base_url}/json/new", timeout=10)
                 if resp.status_code == 200:
                     info = resp.json()
                     break
@@ -917,6 +922,56 @@ class CDPClient:
             restored[skill].append(tab)
 
         return restored
+
+    def close_stale_tabs(self, dashboard_port: int = 7777,
+                         db_path: str | None = None) -> int:
+        """Close tabs that are not in the tab registry and not the dashboard.
+
+        Keeps:
+        - Tabs registered in the DB (persistent skill tabs)
+        - The dashboard tab (localhost:{dashboard_port})
+        - about:blank tabs (used as placeholders)
+        - Tabs we currently hold a WS connection to
+
+        Returns the number of tabs closed.
+        """
+        all_tabs = self.list_tabs()
+        if not all_tabs:
+            return 0
+
+        registered = get_all_registered_tabs(db_path)
+        registered_ids = {r["chrome_tab_id"] for r in registered if r.get("chrome_tab_id")}
+        owned_ids = {tab.id for tab in self._tabs}
+        protected_ids = registered_ids | owned_ids
+
+        closed = 0
+        for tab_info in all_tabs:
+            tab_id = tab_info["id"]
+            tab_url = tab_info.get("url", "")
+
+            # Keep protected tabs (registered or owned)
+            if tab_id in protected_ids:
+                continue
+
+            # Keep dashboard tab
+            if f"localhost:{dashboard_port}" in tab_url:
+                continue
+
+            # Keep blank tabs
+            if tab_url in ("about:blank", "chrome://newtab/", ""):
+                continue
+
+            # Close everything else (login tabs, orphaned tabs, etc.)
+            logger.info("close_stale_tabs: closing tab %s on %s", tab_id[:8], tab_url[:60])
+            try:
+                requests.get(f"{self.base_url}/json/close/{tab_id}", timeout=3)
+                closed += 1
+            except Exception:
+                pass
+
+        if closed:
+            logger.info("close_stale_tabs: closed %d stale tab(s)", closed)
+        return closed
 
     def release_tab(self, skill_name: str, tab: CDPTab,
                     tab_index: int = 0, db_path: str | None = None):

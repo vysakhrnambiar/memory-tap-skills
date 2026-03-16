@@ -20,9 +20,11 @@ from ..db.core_db import (
     get_core_connection, get_setting, set_setting,
     get_alerts, dismiss_alert, get_all_skills, get_skill_info,
     get_notifications, mark_notification_read, dismiss_notification,
-    get_widget_config, set_widget_config,
+    get_widget_config, get_all_widget_config, set_widget_config,
     update_skill_login_status, CORE_DB_PATH,
 )
+from ..rag.search import search_all as rag_search_all
+from ..rag.chat import chat as rag_chat
 
 logger = logging.getLogger("memory_tap.dashboard")
 
@@ -38,6 +40,10 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _chrome_manager = None
 _scheduler = None
 _db_path = None
+
+# Track login tabs so we can close them after successful login
+# Maps auth_provider -> chrome_tab_id
+_login_tabs: dict[str, str] = {}
 
 
 def set_app_deps(chrome_manager, scheduler, db_path=None):
@@ -196,7 +202,13 @@ async def api_open_login(name: str):
         return JSONResponse({"error": f"Skill '{name}' not found"}, status_code=404)
     url = skill.get_login_url()
     logger.info("API: open_login(%s) — opening %s in new Chrome tab", name, url)
-    _chrome_manager.open_headed(url)
+    tab_info = _chrome_manager.open_headed(url)
+    # Store tab ID so we can close it after successful login
+    if tab_info and tab_info.get("id"):
+        provider = skill.manifest.auth_provider or name
+        _login_tabs[provider] = tab_info["id"]
+        logger.info("API: open_login(%s) — stored login tab %s for provider %s",
+                     name, tab_info["id"][:8], provider)
     return {"status": "opened", "url": url}
 
 
@@ -313,6 +325,21 @@ async def api_check_login(name: str):
                      name, status, len(cookies), provider)
         update_skill_login_status(name, status, _db_path)
 
+        # If logged in, close the login tab (no longer needed)
+        if logged_in and provider and _chrome_manager:
+            login_tab_id = _login_tabs.pop(provider, None)
+            if login_tab_id:
+                try:
+                    import requests as _close_req
+                    _close_req.get(
+                        f"http://localhost:{_chrome_manager.port}/json/close/{login_tab_id}",
+                        timeout=3,
+                    )
+                    logger.info("check_login(%s): closed login tab %s for provider %s",
+                                name, login_tab_id[:8], provider)
+                except Exception as e:
+                    logger.warning("check_login(%s): failed to close login tab: %s", name, e)
+
         # If logged in, mark ALL skills with the same auth provider as logged in
         # (signing into Google covers YouTube + Gemini, signing into OpenAI covers ChatGPT)
         if logged_in and provider and _scheduler:
@@ -399,6 +426,52 @@ async def api_get_widgets():
             logger.warning("Failed to get widgets from %s: %s", name, e)
 
     return sorted(widgets, key=lambda w: (w["position_y"], w["position_x"]))
+
+
+@app.get("/api/widgets/config")
+async def api_get_widget_config():
+    """Get ALL widget configs (including hidden) for customize panel."""
+    if not _scheduler:
+        return []
+
+    all_configs = get_all_widget_config(_db_path)
+    config_map = {(c["skill_name"], c["widget_name"]): c for c in all_configs}
+
+    result = []
+    for name, skill in _scheduler._skills.items():
+        try:
+            for w in skill.get_widgets():
+                cfg = config_map.get((name, w.name))
+                result.append({
+                    "skill_name": name,
+                    "widget_name": w.name,
+                    "title": w.title,
+                    "enabled": cfg["visible"] if cfg else 1,
+                    "position": cfg["position_y"] if cfg else len(result),
+                })
+        except Exception as e:
+            logger.warning("Failed to get widgets from %s: %s", name, e)
+
+    return sorted(result, key=lambda w: w["position"])
+
+
+@app.post("/api/widgets/config")
+async def api_save_widget_config(request: Request):
+    """Save widget visibility + order from customize panel.
+
+    Body: {widgets: [{skill_name, widget_name, enabled, position}, ...]}
+    """
+    data = await request.json()
+    widgets = data.get("widgets", [])
+    for w in widgets:
+        set_widget_config(
+            skill_name=w["skill_name"],
+            widget_name=w["widget_name"],
+            position_y=w.get("position", 0),
+            visible=bool(w.get("enabled", True)),
+            db_path=_db_path,
+        )
+    return {"status": "ok", "count": len(widgets)}
 
 
 @app.get("/api/widgets/{skill_name}/{widget_name}/data")
@@ -598,6 +671,50 @@ async def api_global_search(q: str, limit: int = 20):
         except Exception as e:
             logger.warning("Search failed for %s: %s", name, e)
     return results[:limit]
+
+
+# ============================================================
+# API: RAG Search + Chat
+# ============================================================
+
+@app.get("/api/rag/search")
+async def api_rag_search(q: str, limit: int = 20):
+    """Search across all skill DBs using FTS5 (RAG search module)."""
+    if not q.strip():
+        return []
+    try:
+        results = rag_search_all(q, limit=limit)
+        return results
+    except Exception as e:
+        logger.error("RAG search error: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request):
+    """Chat with your collected data using LLM + RAG context.
+
+    Body: {message: str, history: [{role, content}, ...]}
+    Returns: {response: str, sources: [{source, title, url, type}], error: str|null}
+    """
+    data = await request.json()
+    message = data.get("message", "").strip()
+    history = data.get("history", [])
+
+    if not message:
+        return JSONResponse({"error": "Empty message"}, status_code=400)
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: rag_chat(
+            user_message=message,
+            conversation_history=history,
+            core_db_path=_db_path,
+        ),
+    )
+    return result
 
 
 # ============================================================

@@ -290,6 +290,78 @@ class SkillScheduler:
                     break
                 time.sleep(1)
 
+    def reload_skills(self, skills_dir: str | None = None):
+        """Hot-reload all skill modules from disk.
+
+        Called after SkillUpdater downloads new versions from GitHub.
+        For each .py file in the skills directory:
+        1. Re-import using importlib.reload (or fresh load if new)
+        2. Re-register with updated manifest
+        3. Log what was reloaded
+
+        Existing schedule state (last_sync_at, etc.) is preserved in core.db.
+        """
+        if skills_dir is None:
+            from .updater.skill_updater import LOCAL_SKILLS_DIR
+            skills_dir = LOCAL_SKILLS_DIR
+
+        if not os.path.isdir(skills_dir):
+            logger.warning("reload_skills: directory not found: %s", skills_dir)
+            return
+
+        reloaded = []
+        for filename in os.listdir(skills_dir):
+            if not filename.endswith(".py") or filename.startswith("_"):
+                continue
+
+            filepath = os.path.join(skills_dir, filename)
+            module_name = f"memory_tap_skill_{filename.replace('.py', '')}"
+
+            try:
+                # Check if module was previously loaded
+                if module_name in sys.modules:
+                    # Reload existing module
+                    old_module = sys.modules[module_name]
+                    module = importlib.reload(old_module)
+                    logger.info("Reloaded module: %s", module_name)
+                else:
+                    # Fresh load (new skill file)
+                    import importlib.util
+                    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    if project_root not in sys.path:
+                        sys.path.insert(0, project_root)
+
+                    spec = importlib.util.spec_from_file_location(module_name, filepath)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_name] = module
+                    spec.loader.exec_module(module)
+                    logger.info("Loaded new module: %s", module_name)
+
+                # Find the skill class and re-register
+                for attr_name in dir(module):
+                    attr = getattr(module, attr_name)
+                    if (isinstance(attr, type) and issubclass(attr, BaseSkill)
+                            and attr is not BaseSkill):
+                        skill = attr()
+                        old_version = None
+                        if skill.manifest.name in self._skills:
+                            old_version = self._skills[skill.manifest.name].manifest.version
+                        self.register_skill(skill)
+                        new_version = skill.manifest.version
+                        if old_version and old_version != new_version:
+                            logger.info("Skill %s updated: v%s -> v%s",
+                                        skill.manifest.name, old_version, new_version)
+                        reloaded.append(skill.manifest.name)
+                        break
+
+            except Exception as e:
+                logger.error("Failed to reload skill %s: %s", filename, e)
+
+        if reloaded:
+            logger.info("Hot-reloaded %d skill(s): %s", len(reloaded), ", ".join(reloaded))
+        else:
+            logger.info("No skills to reload")
+
     @property
     def skill_names(self) -> list[str]:
         return list(self._skills.keys())

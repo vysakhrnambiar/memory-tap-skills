@@ -4,10 +4,12 @@ Memory Tap — entry point.
 Starts:
 1. SQLite DB initialization
 2. Chrome Manager (isolated Chrome instance)
-3. Skill Updater (auto-pulls from GitHub)
-4. Skill Scheduler (runs skills on schedule)
-5. Dashboard (FastAPI on localhost:7777)
-6. System tray icon
+2b. Tab recovery (recreates persistent tabs from previous session)
+3. Skill Scheduler (created, skills loaded from disk)
+4. Skill Updater (auto-pulls from GitHub, hot-reloads scheduler)
+5. Scheduler started
+6. Dashboard (FastAPI on localhost:7777)
+7. System tray icon
 
 Usage:
     python -m src
@@ -324,9 +326,37 @@ def main():
         logger.error("Failed to start Chrome. Exiting.")
         sys.exit(1)
 
-    # 3. Download skills from GitHub (blocking on first run, so all skills are ready)
+    # 2b. Recover persistent tabs from previous session
+    #     Old tab_ids are invalid after Chrome restarts — recreate tabs at stored URLs
+    #     This must run AFTER Chrome is ready but BEFORE skills start running
+    logger.info("Recovering persistent tabs from previous session...")
+    try:
+        from .cdp_client import CDPClient
+        with CDPClient() as recovery_client:
+            restored = recovery_client.restore_all_tabs()
+            if restored:
+                total_tabs = sum(len(tabs) for tabs in restored.values())
+                logger.info("Recovered %d tab(s) for %d skill(s): %s",
+                            total_tabs, len(restored), ", ".join(restored.keys()))
+                # Release WS connections — tabs stay open in Chrome for skills to reconnect later
+                for skill_name, tabs in restored.items():
+                    for tab in tabs:
+                        try:
+                            recovery_client.release_tab(skill_name, tab)
+                        except Exception:
+                            pass
+            else:
+                logger.info("No persistent tabs to recover")
+    except Exception as e:
+        logger.warning("Tab recovery failed (non-fatal): %s", e)
+
+    # 3. Start Scheduler (created before updater so updater can reference it for hot-reload)
+    _scheduler = SkillScheduler(_chrome)
+    _scheduler.load_skills_from_dir(LOCAL_SKILLS_DIR)
+
+    # 4. Download skills from GitHub (blocking on first run, so all skills are ready)
     import time
-    _updater = SkillUpdater()
+    _updater = SkillUpdater(scheduler=_scheduler)
     logger.info("Downloading skills from GitHub...")
     try:
         _updater.update_all()  # Blocking download — ensures all skills ready before scheduler
@@ -335,21 +365,19 @@ def main():
         logger.warning("Skill download failed: %s", e)
     _updater.start()  # Start background polling for future updates
 
-    # 4. Start Scheduler
-    _scheduler = SkillScheduler(_chrome)
-    _scheduler.load_skills_from_dir(LOCAL_SKILLS_DIR)
+    # 5. Start Scheduler (after skills loaded + updated)
     _scheduler.start()
 
-    # 5. Start Dashboard
+    # 6. Start Dashboard
     from .dashboard.app import app, set_app_deps
     set_app_deps(_chrome, _scheduler)
 
     logger.info("Starting dashboard on http://localhost:%d", DASHBOARD_PORT)
 
-    # 6. Create system tray icon
+    # 7. Create system tray icon
     tray_icon = _create_tray_icon()
 
-    # 7. First-run: open dashboard in Chrome AFTER uvicorn starts
+    # 8. First-run: open dashboard in Chrome AFTER uvicorn starts
     # Must run in a thread because uvicorn.run() blocks
     def _delayed_first_run():
         """Wait for dashboard to be ready, then open it in Chrome."""

@@ -28,9 +28,11 @@ LOCAL_SKILLS_DIR = os.path.join(
 class SkillUpdater:
     """Polls GitHub for skill updates and downloads them."""
 
-    def __init__(self, skills_dir: str | None = None, check_hours: int = 6):
+    def __init__(self, skills_dir: str | None = None, check_hours: int = 6,
+                 scheduler=None):
         self.skills_dir = skills_dir or LOCAL_SKILLS_DIR
         self.check_hours = check_hours
+        self.scheduler = scheduler  # SkillScheduler ref for hot-reload
         self._thread: threading.Thread | None = None
         self._running = False
         self._last_manifest: dict | None = None
@@ -141,12 +143,25 @@ class SkillUpdater:
             return False
 
     def update_all(self) -> list[str]:
-        """Download all available updates. Returns list of updated skill names."""
+        """Download all available updates. Returns list of updated skill names.
+
+        After downloading, triggers hot-reload on the scheduler (if available)
+        so updated skill modules are re-imported without restarting.
+        """
         updates = self.check_updates()
         updated = []
         for u in updates:
             if self.download_skill(u["name"]):
                 updated.append(u["name"])
+
+        # Hot-reload updated skills in the scheduler
+        if updated and self.scheduler is not None:
+            try:
+                self.scheduler.reload_skills(self.skills_dir)
+                logger.info("Hot-reloaded skills after update: %s", updated)
+            except Exception as e:
+                logger.error("Hot-reload failed after update: %s", e)
+
         return updated
 
     def start(self):
