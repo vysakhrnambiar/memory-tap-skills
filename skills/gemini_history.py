@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 """
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 import json
 import logging
@@ -301,7 +301,17 @@ class GeminiHistorySkill(BaseSkill):
         tab.navigate(conv["url"])
         wait_human(3, 5)
 
-        tab.wait_for_selector("user-query, model-response", timeout=10)
+        # Wait for messages to render — retry with longer timeout if needed
+        found = tab.wait_for_selector("user-query, model-response", timeout=15)
+        if not found:
+            # Page might be slow — give it more time
+            logger.warning("Gemini: messages not found after 15s for '%s', waiting more...",
+                          conv.get("title", "?")[:40])
+            wait_human(3, 5)
+            found = tab.wait_for_selector("user-query, model-response", timeout=10)
+        if not found:
+            logger.warning("Gemini: no messages found for '%s' — page may not have loaded",
+                          conv.get("title", "?")[:40])
 
         # Expand all thinking blocks
         # Verified (2026-03-16): button text is "Thoughts" or "Show thinking"

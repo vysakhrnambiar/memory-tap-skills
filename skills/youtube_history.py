@@ -13,9 +13,9 @@ Stop strategy: DATE_GROUP
 - History groups by: Today, Yesterday, day names, then "Mon DD"
 - Stop when: current date_group <= last_collected_date_group AND all videos in it are known
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 """
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 import json
 import logging
@@ -183,6 +183,7 @@ class YouTubeHistorySkill(BaseSkill):
                 date_group TEXT DEFAULT '',
                 watched_date TEXT DEFAULT '',
                 content_type TEXT NOT NULL DEFAULT 'video',
+                dismissed_unfinished INTEGER NOT NULL DEFAULT 0,
                 synced_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -774,7 +775,7 @@ class YouTubeHistorySkill(BaseSkill):
                 display_type="progress_list",
                 data_query=(
                     "SELECT title, channel, url, watch_percent, duration "
-                    "FROM videos WHERE watch_percent > 0 AND watch_percent < 100 "
+                    "FROM videos WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0 "
                     "ORDER BY updated_at DESC LIMIT 5"
                 ),
                 refresh_seconds=600,
@@ -810,7 +811,7 @@ class YouTubeHistorySkill(BaseSkill):
                 display_type="progress_list",
                 data_query=(
                     "SELECT title, channel, url, watch_percent, duration, watched_date "
-                    "FROM videos WHERE watch_percent > 0 AND watch_percent < 100 "
+                    "FROM videos WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0 "
                     "ORDER BY updated_at DESC"
                 ),
                 position=1,
@@ -879,7 +880,7 @@ class YouTubeHistorySkill(BaseSkill):
         total_s = conn.execute("SELECT COUNT(*) as c FROM shorts").fetchone()["c"]
         unfinished = conn.execute(
             "SELECT COUNT(*) as c FROM videos "
-            "WHERE watch_percent > 0 AND watch_percent < 100"
+            "WHERE watch_percent >= 30 AND watch_percent < 100 AND dismissed_unfinished = 0"
         ).fetchone()["c"]
         completed = conn.execute(
             "SELECT COUNT(*) as c FROM videos WHERE watch_percent = 100"

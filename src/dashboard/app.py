@@ -165,6 +165,27 @@ async def api_skill_running(name: str):
     return {"running": running}
 
 
+@app.post("/api/skills/{skill_name}/dismiss/{item_type}/{item_id}")
+async def api_dismiss_item(skill_name: str, item_type: str, item_id: str):
+    """Dismiss an item (e.g., dismiss a video from 'unfinished' list)."""
+    logger.info("API: dismiss %s/%s from %s", item_type, item_id, skill_name)
+    if not _scheduler or not _scheduler.skill_db_mgr:
+        return JSONResponse({"error": "Not initialized"}, status_code=500)
+    try:
+        conn = _scheduler.skill_db_mgr.get_connection(skill_name)
+        if item_type == "unfinished_video":
+            conn.execute(
+                "UPDATE videos SET dismissed_unfinished = 1 WHERE video_id = ?",
+                (item_id,),
+            )
+            conn.commit()
+        conn.close()
+        return {"status": "dismissed"}
+    except Exception as e:
+        logger.error("Dismiss error: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/skills/{name}/login")
 async def api_open_login(name: str):
     """Open Chrome for user to log in."""
@@ -486,6 +507,36 @@ async def api_get_section_data(name: str, section: str, page: int = 1):
             "display_type": section_def.display_type,
             "page": page,
             "page_size": section_def.page_size if section_def.paginated else 0,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/skills/{skill_name}/conversations/{conv_id}/messages")
+async def api_get_messages(skill_name: str, conv_id: int):
+    """Get messages for a conversation (ChatGPT/Gemini)."""
+    if not _scheduler or not _scheduler.skill_db_mgr:
+        return JSONResponse({"error": "Not initialized"}, status_code=500)
+    try:
+        conn = _scheduler.skill_db_mgr.get_connection(skill_name)
+        messages = conn.execute(
+            "SELECT role, content, thinking_block, sources, code_blocks, message_order "
+            "FROM messages WHERE conversation_id = ? ORDER BY message_order",
+            (conv_id,),
+        ).fetchall()
+        conn.close()
+        return {
+            "messages": [
+                {
+                    "role": r["role"],
+                    "content": r["content"],
+                    "thinking_block": r["thinking_block"] or "",
+                    "sources": r["sources"] or "",
+                    "code_blocks": r["code_blocks"] or "",
+                    "order": r["message_order"],
+                }
+                for r in messages
+            ]
         }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
