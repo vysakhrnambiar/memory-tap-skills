@@ -150,9 +150,11 @@ def _handle_first_run(chrome: ChromeManager):
 
     is_first_run = get_setting("first_run_done") != "yes"
 
+    # Always re-register startup on every launch (cleanup scripts may have removed it)
+    _register_startup()
+
     if is_first_run:
-        logger.info("First run detected — registering startup")
-        _register_startup()
+        logger.info("First run detected")
         set_setting("first_run_done", "yes")
 
     # Always open dashboard in Chrome if only about:blank is open
