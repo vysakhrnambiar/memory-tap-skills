@@ -13,9 +13,9 @@ Stop strategy: DATE_GROUP
 - History groups by: Today, Yesterday, day names, then "Mon DD"
 - Stop when: current date_group <= last_collected_date_group AND all videos in it are known
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 """
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 import json
 import logging
@@ -233,6 +233,13 @@ class YouTubeHistorySkill(BaseSkill):
             CREATE INDEX IF NOT EXISTS idx_videos_watch_percent ON videos(watch_percent);
             CREATE INDEX IF NOT EXISTS idx_shorts_watched_date ON shorts(watched_date);
         """)
+        # Seed last_date_group to today so first run only collects today's videos
+        from datetime import datetime as _dt
+        today = _dt.now().date().isoformat()
+        conn.execute(
+            "INSERT OR IGNORE INTO collection_state (key, value) VALUES ('last_date_group', ?)",
+            (today,),
+        )
         conn.commit()
 
     # ── Login detection ───────────────────────────────────────────

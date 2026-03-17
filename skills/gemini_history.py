@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 """
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 import json
 import logging
@@ -178,10 +178,11 @@ class GeminiHistorySkill(BaseSkill):
         result.items_found = len(conversations)
         logger.info("Found %d Gemini conversations", len(conversations))
 
-        # Phase 2: Process each
+        # Phase 2: Process each (bottom-first to preserve sidebar order)
         consecutive_known = 0
+        collection_order = list(reversed(conversations))
 
-        for i, conv in enumerate(conversations):
+        for i, conv in enumerate(collection_order):
             if limits.should_stop():
                 logger.info("Stopping: %s", limits.stop_reason)
                 break
@@ -234,8 +235,7 @@ class GeminiHistorySkill(BaseSkill):
 
             wait_human(2, 4)
 
-        # Courtesy: restore sidebar order by visiting original top conversations
-        self._restore_sidebar_order(tab, conversations[:5])
+        # No sidebar restore needed — bottom-first collection preserves order naturally
 
         return result
 

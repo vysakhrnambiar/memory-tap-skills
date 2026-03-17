@@ -17,9 +17,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 Scope: Regular chats (/c/) only. Projects (/g/g-p-), GPTs (/g/g-), Group chats (/gg/) excluded.
 Text only — no images, artifacts, files.
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 """
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 import json
 import logging
@@ -187,10 +187,13 @@ class ChatGPTHistorySkill(BaseSkill):
         result.items_found = len(conversations)
         logger.info("Found %d conversations in sidebar", len(conversations))
 
-        # Phase 2: Process each conversation
+        # Phase 2: Process each conversation (bottom-first to preserve sidebar order)
+        # Visiting a conversation moves it to sidebar top. By visiting bottom first,
+        # the last conversation we visit (originally #1) ends up back on top naturally.
         consecutive_known = 0
+        collection_order = list(reversed(conversations))
 
-        for i, conv in enumerate(conversations):
+        for i, conv in enumerate(collection_order):
             # Check framework limits
             if limits.should_stop():
                 logger.info("Stopping: %s", limits.stop_reason)
@@ -253,9 +256,7 @@ class ChatGPTHistorySkill(BaseSkill):
 
             wait_human(2, 4)
 
-        # Courtesy: restore sidebar order by visiting original top conversations
-        # Our collection visited conversations which moved them to top — undo that
-        self._restore_sidebar_order(tab, conversations[:5])
+        # No sidebar restore needed — bottom-first collection preserves order naturally
 
         return result
 
