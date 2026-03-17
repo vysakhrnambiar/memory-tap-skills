@@ -17,9 +17,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 Scope: Regular chats (/c/) only. Projects (/g/g-p-), GPTs (/g/g-), Group chats (/gg/) excluded.
 Text only — no images, artifacts, files.
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 """
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 import json
 import logging
@@ -279,13 +279,33 @@ class ChatGPTHistorySkill(BaseSkill):
 
         Returns list of {external_id, title, position, is_pinned, url}.
         """
-        # Scroll sidebar to load all conversations
-        for scroll_num in range(15):
+        # Scroll sidebar to load all conversations — wait for new items to appear
+        prev_count = 0
+        no_change_count = 0
+        for scroll_num in range(30):  # max 30 scrolls
             tab.js("""
                 var nav = document.querySelector('nav');
                 if (nav) nav.scrollTop += 400;
             """)
-            wait_human(0.8, 1.5)
+            wait_human(1.5, 2.5)
+
+            # Count current conversations
+            cur_count = tab.js("""
+                return (function() {
+                    return document.querySelectorAll('nav a[href*="/c/"]').length;
+                })();
+            """) or 0
+            cur_count = int(cur_count)
+
+            if cur_count > prev_count:
+                no_change_count = 0
+                prev_count = cur_count
+                logger.info("Sidebar scroll %d: %d conversations loaded", scroll_num + 1, cur_count)
+            else:
+                no_change_count += 1
+                if no_change_count >= 3:
+                    logger.info("Sidebar scroll done: %d conversations (no new after %d scrolls)", cur_count, no_change_count)
+                    break
 
         # Extract conversation links
         entries_raw = tab.js("""
@@ -331,8 +351,21 @@ class ChatGPTHistorySkill(BaseSkill):
         tab.navigate(conv["url"])
         wait_human(3, 5)
 
-        # All messages load at once (verified in probe) — just wait for them
-        tab.wait_for_selector("[data-message-id]", timeout=10)
+        # Wait for first messages to appear
+        tab.wait_for_selector("[data-message-id]", timeout=15)
+
+        # Scroll to top to load all messages (ChatGPT lazy-loads on scroll up)
+        prev_count = 0
+        for scroll_up in range(20):  # max 20 scroll-ups
+            tab.js("window.scrollTo(0, 0)")
+            wait_human(1, 2)
+            cur_count = tab.js("""
+                return document.querySelectorAll('[data-message-id]').length;
+            """) or 0
+            cur_count = int(cur_count)
+            if cur_count == prev_count and scroll_up > 0:
+                break  # no new messages loaded — all loaded
+            prev_count = cur_count
 
         # Extract messages with role, content, sources, code
         messages_raw = tab.js("""

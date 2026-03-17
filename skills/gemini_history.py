@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 """
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 import json
 import logging
@@ -251,13 +251,32 @@ class GeminiHistorySkill(BaseSkill):
 
     def _scan_sidebar(self, tab: CDPTab) -> list[dict]:
         """Scroll sidebar and collect conversation entries."""
-        for _ in range(10):
+        prev_count = 0
+        no_change_count = 0
+        for scroll_num in range(30):
             tab.js("""
                 var sidebar = document.querySelector('nav, [role="navigation"], .sidebar');
                 if (sidebar) sidebar.scrollTop += 400;
                 else window.scrollTo(0, document.body.scrollHeight);
             """)
-            wait_human(0.8, 1.5)
+            wait_human(1.5, 2.5)
+
+            cur_count = tab.js("""
+                return (function() {
+                    return document.querySelectorAll('a[href*="/app/"]').length;
+                })();
+            """) or 0
+            cur_count = int(cur_count)
+
+            if cur_count > prev_count:
+                no_change_count = 0
+                prev_count = cur_count
+                logger.info("Sidebar scroll %d: %d conversations loaded", scroll_num + 1, cur_count)
+            else:
+                no_change_count += 1
+                if no_change_count >= 3:
+                    logger.info("Sidebar scroll done: %d conversations (no new after %d scrolls)", cur_count, no_change_count)
+                    break
 
         entries_raw = tab.js("""
             return (function() {
@@ -300,6 +319,17 @@ class GeminiHistorySkill(BaseSkill):
         """
         tab.navigate(conv["url"])
         wait_human(3, 5)
+
+        # Scroll to top to load all messages (long conversations may lazy-load)
+        prev_count = 0
+        for scroll_up in range(10):
+            tab.js("window.scrollTo(0, 0)")
+            wait_human(1, 1.5)
+            cur_count = tab.js("return document.querySelectorAll('user-query, model-response').length") or 0
+            cur_count = int(cur_count)
+            if cur_count == prev_count and scroll_up > 0:
+                break
+            prev_count = cur_count
 
         # Wait for messages to render AND have content (not just empty elements)
         # Gemini hydrates elements after DOM creation — element exists but text is empty initially
@@ -437,8 +467,12 @@ class GeminiHistorySkill(BaseSkill):
         if messages_raw:
             try:
                 messages = json.loads(messages_raw)
-            except (json.JSONDecodeError, TypeError):
-                pass
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning("Gemini: JSON parse error for '%s': %s (raw=%s)",
+                              conv.get("title", "?")[:30], e, str(messages_raw)[:100])
+        else:
+            logger.warning("Gemini: messages_raw is %s for '%s' (content_ready=%s)",
+                          repr(messages_raw), conv.get("title", "?")[:30], content_ready)
 
         return messages, has_thinking
 
