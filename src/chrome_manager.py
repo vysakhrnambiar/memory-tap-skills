@@ -318,53 +318,106 @@ class ChromeManager:
             time.sleep(0.5)
         return False
 
-    def cleanup_tabs(self):
-        """Close all tabs except about:blank on startup.
+    def audit_tabs(self, dashboard_port: int = 7777):
+        """Enforce tab rules: exactly 1 dashboard tab, close everything else.
 
-        Called right after Chrome is launched/confirmed running to prevent
-        tab accumulation across restarts. Stale login tabs, leftover
-        skill tabs, etc. are all closed. The scheduler will recreate
-        persistent skill tabs as needed.
+        Rules:
+        - Exactly 1 dashboard tab (localhost:{dashboard_port}) must exist
+        - If 0 dashboard tabs → navigate a blank tab to dashboard, or create one
+        - If 2+ dashboard tabs → close extras
+        - All non-dashboard tabs are closed
+        - about:blank tabs → close (unless needed for dashboard)
+
+        Called by:
+        - Level 4: On startup (cleanup_tabs)
+        - Level 3: Health monitor every 5 min (when no skill running)
+        - Level 2: Scheduler after each skill run
         """
         try:
             resp = requests.get(f"{self.cdp_base_url}/json", timeout=5)
             tabs = [t for t in resp.json() if t.get("type") == "page"]
         except Exception as e:
-            logger.warning("cleanup_tabs: could not list tabs: %s", e)
+            logger.warning("audit_tabs: could not list tabs: %s", e)
             return
 
         if not tabs:
             return
 
-        # Keep at least one blank tab so Chrome doesn't close
-        has_blank = any(
-            t.get("url") in ("about:blank", "chrome://newtab/", "")
-            for t in tabs
-        )
-        if not has_blank:
-            # Create a blank tab first so Chrome has something to keep
-            try:
-                for method in [requests.put, requests.get]:
-                    r = method(f"{self.cdp_base_url}/json/new", timeout=5)
-                    if r.status_code == 200:
-                        logger.info("cleanup_tabs: created blank tab to keep Chrome alive")
-                        break
-            except Exception:
-                pass
+        dashboard_url = f"localhost:{dashboard_port}"
+        dashboard_tabs = []
+        blank_tabs = []
+        other_tabs = []
+
+        for t in tabs:
+            url = t.get("url", "")
+            if dashboard_url in url:
+                dashboard_tabs.append(t)
+            elif url in ("about:blank", "chrome://newtab/", ""):
+                blank_tabs.append(t)
+            else:
+                other_tabs.append(t)
 
         closed = 0
-        for t in tabs:
-            tab_url = t.get("url", "")
-            if tab_url in ("about:blank", "chrome://newtab/", ""):
-                continue
+
+        # Close all non-dashboard, non-blank tabs
+        for t in other_tabs:
             try:
                 requests.get(f"{self.cdp_base_url}/json/close/{t['id']}", timeout=3)
                 closed += 1
             except Exception:
                 pass
 
+        # Ensure exactly 1 dashboard tab
+        if len(dashboard_tabs) == 0:
+            # No dashboard — reuse a blank tab or create one
+            if blank_tabs:
+                # Navigate first blank tab to dashboard
+                import websocket as _ws
+                import json as _json
+                try:
+                    ws = _ws.create_connection(blank_tabs[0]["webSocketDebuggerUrl"], timeout=10)
+                    ws.send(_json.dumps({
+                        "id": 1, "method": "Page.navigate",
+                        "params": {"url": f"http://localhost:{dashboard_port}"},
+                    }))
+                    ws.recv()
+                    ws.close()
+                    logger.info("audit_tabs: navigated blank tab to dashboard")
+                    # Close remaining blank tabs
+                    for bt in blank_tabs[1:]:
+                        try:
+                            requests.get(f"{self.cdp_base_url}/json/close/{bt['id']}", timeout=3)
+                            closed += 1
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning("audit_tabs: failed to navigate blank tab: %s", e)
+            else:
+                # Create a dashboard tab
+                self.open_headed(f"http://localhost:{dashboard_port}")
+                logger.info("audit_tabs: created dashboard tab")
+        else:
+            # Close extra dashboard tabs (keep first one)
+            for dt in dashboard_tabs[1:]:
+                try:
+                    requests.get(f"{self.cdp_base_url}/json/close/{dt['id']}", timeout=3)
+                    closed += 1
+                except Exception:
+                    pass
+            # Close all blank tabs (dashboard exists, blanks not needed)
+            for bt in blank_tabs:
+                try:
+                    requests.get(f"{self.cdp_base_url}/json/close/{bt['id']}", timeout=3)
+                    closed += 1
+                except Exception:
+                    pass
+
         if closed:
-            logger.info("cleanup_tabs: closed %d leftover tab(s) from previous session", closed)
+            logger.info("audit_tabs: closed %d tab(s)", closed)
+
+    def cleanup_tabs(self):
+        """Level 4: Startup cleanup — calls audit_tabs."""
+        self.audit_tabs()
 
     def open_headed(self, url: str, reuse_blank: bool = False):
         """Open a URL in the Chrome instance for user interaction (login etc).
@@ -585,9 +638,22 @@ class HealthMonitor:
 
     def _loop(self):
         """Background health check loop."""
+        checks_since_audit = 0
+        AUDIT_EVERY_N_CHECKS = 30  # ~5 min at 10s interval
+
         while self._running:
             try:
                 self.check_now()
+                checks_since_audit += 1
+
+                # Level 3: Periodic tab audit every ~5 minutes
+                if checks_since_audit >= AUDIT_EVERY_N_CHECKS and self.healthy:
+                    checks_since_audit = 0
+                    try:
+                        self.chrome.audit_tabs()
+                    except Exception as e:
+                        logger.warning("Periodic audit_tabs failed: %s", e)
+
             except Exception as e:
                 logger.error("Health monitor error: %s", e)
                 self.healthy = False

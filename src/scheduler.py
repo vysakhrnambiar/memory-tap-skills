@@ -175,6 +175,12 @@ class SkillScheduler:
                 "error": error_holder[0], "details": {},
             }
 
+        # Level 2: Audit tabs after every skill run (success or fail)
+        try:
+            self.chrome.audit_tabs()
+        except Exception as e:
+            logger.warning("Post-skill audit_tabs failed: %s", e)
+
         result = result_holder[0]
         if result is None:
             return None

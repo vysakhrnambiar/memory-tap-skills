@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.8"
+__version__ = "0.2.9"
 """
-__version__ = "0.2.8"
+__version__ = "0.2.9"
 
 import json
 import logging
@@ -170,6 +170,11 @@ class GeminiHistorySkill(BaseSkill):
         result = CollectResult()
         conn = tracker._skill_conn
 
+        # CDPClient for creating new tabs (Gemini needs new tab per conversation)
+        from src.cdp_client import CDPClient
+        cdp_port = int(tab._cdp_base_url.split(':')[-1])
+        _cdp = CDPClient(port=cdp_port)
+
         tab.navigate("https://gemini.google.com/app")
         wait_human(3, 5)
 
@@ -225,7 +230,19 @@ class GeminiHistorySkill(BaseSkill):
                 consecutive_known = 0
 
             try:
-                messages, has_thinking = self._collect_conversation(tab, conv)
+                # Open conversation in NEW tab (Gemini SPA fails with same-tab navigation)
+                # Level 1: track tab for cleanup in finally
+                conv_tab = _cdp.new_tab(conv["url"])
+                _open_tab_id = conv_tab.id
+                try:
+                    messages, has_thinking = self._collect_conversation(conv_tab, conv)
+                finally:
+                    try:
+                        _cdp.close_tab(conv_tab)
+                    except Exception:
+                        pass
+                    _open_tab_id = None
+
                 conv_db_id = self._upsert_conversation(
                     conn, conv, len(messages), has_thinking
                 )
