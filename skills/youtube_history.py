@@ -13,9 +13,9 @@ Stop strategy: DATE_GROUP
 - History groups by: Today, Yesterday, day names, then "Mon DD"
 - Stop when: current date_group <= last_collected_date_group AND all videos in it are known
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 """
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 import json
 import logging
@@ -336,9 +336,10 @@ class YouTubeHistorySkill(BaseSkill):
         updated_count = 0
 
         for video in history_items["videos"]:
-            stop, reason = self.should_stop(video, tracker, limits)
-            if stop:
-                logger.info("Stopping video visits: %s", reason)
+            # Only check time limit, NOT date stop — Phase 2 must visit
+            # all videos from Phase 1's list regardless of date
+            if limits.time_exceeded:
+                logger.info("Stopping video visits: time limit reached")
                 break
 
             existing = conn.execute(
@@ -620,13 +621,16 @@ class YouTubeHistorySkill(BaseSkill):
             }
         """)
 
-        wait_human(1, 2)
-
-        # Title
-        title = tab.js("""
-            var t = document.querySelector('h1.ytd-watch-metadata yt-formatted-string, h1 yt-formatted-string');
-            return t ? t.textContent.trim() : '';
-        """) or ""
+        # Wait for title to actually load (not just the element)
+        title = ""
+        for _attempt in range(5):
+            wait_human(1, 2)
+            title = tab.js("""
+                var t = document.querySelector('h1.ytd-watch-metadata yt-formatted-string, h1 yt-formatted-string');
+                return t ? t.textContent.trim() : '';
+            """) or ""
+            if len(title) > 3:
+                break
 
         # Channel — ytd-channel-name a has the text, #owner a is just the avatar (empty text)
         channel = tab.js("""

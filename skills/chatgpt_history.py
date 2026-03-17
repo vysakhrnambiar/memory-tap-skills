@@ -17,9 +17,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 Scope: Regular chats (/c/) only. Projects (/g/g-p-), GPTs (/g/g-), Group chats (/gg/) excluded.
 Text only — no images, artifacts, files.
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 """
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 import json
 import logging
