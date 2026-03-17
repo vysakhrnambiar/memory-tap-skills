@@ -460,6 +460,12 @@ class CDPTab:
             "timeout": timeout * 1000,
         }, timeout + 5)
         if isinstance(r, dict) and "_error" in r:
+            logger.warning("js() CDP error: %s (expr=%s)", r["_error"], expression[:80])
+            return None
+        # Check for JS exception
+        exc = r.get("exceptionDetails")
+        if exc:
+            logger.warning("js() exception: %s (expr=%s)", exc.get("text", exc), expression[:80])
             return None
         v = r.get("result", {})
         if v.get("type") == "undefined" or v.get("subtype") == "error":
