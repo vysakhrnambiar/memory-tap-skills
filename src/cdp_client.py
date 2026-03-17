@@ -465,7 +465,9 @@ class CDPTab:
         # Check for JS exception
         exc = r.get("exceptionDetails")
         if exc:
-            logger.warning("js() exception: %s (expr=%s)", exc.get("text", exc), expression[:80])
+            exc_obj = exc.get("exception", {})
+            desc = exc_obj.get("description", "") or exc_obj.get("value", "") or exc.get("text", "")
+            logger.warning("js() exception: %s | full: %s (expr=%s)", desc[:200], str(exc)[:300], expression[:100])
             return None
         v = r.get("result", {})
         if v.get("type") == "undefined" or v.get("subtype") == "error":
