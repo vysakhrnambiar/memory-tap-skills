@@ -1040,8 +1040,9 @@
                 const resp = await fetch(`/api/skills/${name}/run`, { method: 'POST' });
                 const data = await resp.json();
                 if (data.error) alert('Error: ' + data.error);
-                else alert(`Done! ${data.items_found} found, ${data.items_new} new`);
-            } finally { renderSettings(); }
+                else if (data.status === 'started') alert('Started! Running in background...');
+                else alert(`Done! ${data.items_found || 0} found, ${data.items_new || 0} new`);
+            } finally { setTimeout(renderSettings, 2000); }
         }
 
         async function checkUpdates() {

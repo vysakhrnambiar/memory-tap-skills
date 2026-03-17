@@ -327,26 +327,17 @@ def main():
         sys.exit(1)
 
     # 2b. Recover persistent tabs from previous session
-    #     Old tab_ids are invalid after Chrome restarts — recreate tabs at stored URLs
-    #     This must run AFTER Chrome is ready but BEFORE skills start running
-    logger.info("Recovering persistent tabs from previous session...")
+    #     Old tab_ids are invalid after Chrome restarts.
+    #     Don't recreate tabs now — skills will create them when they run.
+    #     Just clear stale tab_registry entries so skills start fresh.
+    logger.info("Clearing stale tab registry from previous session...")
     try:
-        from .cdp_client import CDPClient
-        with CDPClient() as recovery_client:
-            restored = recovery_client.restore_all_tabs()
-            if restored:
-                total_tabs = sum(len(tabs) for tabs in restored.values())
-                logger.info("Recovered %d tab(s) for %d skill(s): %s",
-                            total_tabs, len(restored), ", ".join(restored.keys()))
-                # Release WS connections — tabs stay open in Chrome for skills to reconnect later
-                for skill_name, tabs in restored.items():
-                    for tab in tabs:
-                        try:
-                            recovery_client.release_tab(skill_name, tab)
-                        except Exception:
-                            pass
-            else:
-                logger.info("No persistent tabs to recover")
+        from .db.core_db import get_core_connection
+        _conn = get_core_connection(_core_db_path)
+        _conn.execute("DELETE FROM tab_registry")
+        _conn.commit()
+        _conn.close()
+        logger.info("Tab registry cleared — skills will create tabs on first run")
     except Exception as e:
         logger.warning("Tab recovery failed (non-fatal): %s", e)
 
