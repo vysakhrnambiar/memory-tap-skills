@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 """
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 import json
 import logging
@@ -173,6 +173,19 @@ class GeminiHistorySkill(BaseSkill):
         tab.navigate("https://gemini.google.com/app")
         wait_human(3, 5)
 
+        # Ensure sidebar is expanded (Gemini remembers collapsed state per profile)
+        sidebar_links = tab.js("return document.querySelectorAll('a[href*=\"/app/\"]').length") or 0
+        if int(sidebar_links) == 0:
+            logger.info("Gemini: sidebar collapsed, clicking hamburger menu")
+            tab.js("""
+                var btns = document.querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {
+                    var r = btns[i].getBoundingClientRect();
+                    if (r.x < 60 && r.y < 60 && r.width > 0) { btns[i].click(); break; }
+                }
+            """)
+            wait_human(2, 3)
+
         # Phase 1: Scan sidebar
         conversations = self._scan_sidebar(tab)
         result.items_found = len(conversations)
@@ -319,6 +332,17 @@ class GeminiHistorySkill(BaseSkill):
         """
         tab.navigate(conv["url"])
         wait_human(3, 5)
+
+        # Verify we landed on the conversation page, not the home page
+        current_url = tab.get_url() or ""
+        if "/app/" not in current_url or current_url.endswith("/app") or current_url.endswith("/app/"):
+            logger.warning("Gemini: navigated to '%s' but landed on '%s' (home page?)", conv["url"], current_url)
+            # Try clicking the conversation from sidebar instead
+            tab.js(f"""
+                var links = document.querySelectorAll('a[href*=\"{conv['external_id']}\"]');
+                if (links.length > 0) links[0].click();
+            """)
+            wait_human(3, 5)
 
         # Scroll to top to load all messages (long conversations may lazy-load)
         prev_count = 0

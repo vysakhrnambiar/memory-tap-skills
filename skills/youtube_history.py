@@ -13,9 +13,9 @@ Stop strategy: DATE_GROUP
 - History groups by: Today, Yesterday, day names, then "Mon DD"
 - Stop when: current date_group <= last_collected_date_group AND all videos in it are known
 
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 """
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 import json
 import logging
