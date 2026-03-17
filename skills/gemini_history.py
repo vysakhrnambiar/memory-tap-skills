@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.2.9"
+__version__ = "0.3.0"
 """
-__version__ = "0.2.9"
+__version__ = "0.3.0"
 
 import json
 import logging
@@ -347,19 +347,9 @@ class GeminiHistorySkill(BaseSkill):
         Returns (messages_list, has_thinking).
         Gemini uses <user-query> and <model-response> — trivial role detection.
         """
-        tab.navigate(conv["url"])
+        # Tab is already navigated to conv URL via new_tab(url) — don't navigate again
+        # Double navigation causes race condition where DOM is half-loaded
         wait_human(3, 5)
-
-        # Verify we landed on the conversation page, not the home page
-        current_url = tab.get_url() or ""
-        if "/app/" not in current_url or current_url.endswith("/app") or current_url.endswith("/app/"):
-            logger.warning("Gemini: navigated to '%s' but landed on '%s' (home page?)", conv["url"], current_url)
-            # Try clicking the conversation from sidebar instead
-            tab.js(f"""
-                var links = document.querySelectorAll('a[href*=\"{conv['external_id']}\"]');
-                if (links.length > 0) links[0].click();
-            """)
-            wait_human(3, 5)
 
         # Scroll to top to load all messages (long conversations may lazy-load)
         prev_count = 0
