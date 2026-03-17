@@ -13,9 +13,9 @@ Stop strategy: CONSECUTIVE_KNOWN
 - No date headers in sidebar
 - Track by conversation hex ID
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 """
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 import json
 import logging
@@ -445,7 +445,7 @@ class GeminiHistorySkill(BaseSkill):
                                     for (var s = 0; s < siblings.length; s++) {
                                         if (siblings[s] !== allBtns[b] && siblings[s].tagName !== 'COLLAPSIBLE-BUTTON') {
                                             var t = siblings[s].textContent.trim();
-                                            if (t.length > 10) thinkingText += t + '\n';
+                                            if (t.length > 10) thinkingText += t + ' ';
                                         }
                                     }
                                 }
