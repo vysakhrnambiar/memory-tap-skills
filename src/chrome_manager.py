@@ -646,13 +646,18 @@ class HealthMonitor:
                 self.check_now()
                 checks_since_audit += 1
 
-                # Level 3: Periodic tab audit every ~5 minutes
+                # Level 3: Periodic tab audit every ~5 minutes (ONLY when no skill running)
                 if checks_since_audit >= AUDIT_EVERY_N_CHECKS and self.healthy:
                     checks_since_audit = 0
-                    try:
-                        self.chrome.audit_tabs()
-                    except Exception as e:
-                        logger.warning("Periodic audit_tabs failed: %s", e)
+                    # Check if scheduler has a skill running
+                    skill_active = getattr(self, 'scheduler_ref', None) and getattr(self.scheduler_ref, 'skill_running', None)
+                    if skill_active:
+                        logger.debug("audit_tabs skipped — skill '%s' is running", self.scheduler_ref.skill_running)
+                    else:
+                        try:
+                            self.chrome.audit_tabs()
+                        except Exception as e:
+                            logger.warning("Periodic audit_tabs failed: %s", e)
 
             except Exception as e:
                 logger.error("Health monitor error: %s", e)

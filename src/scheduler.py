@@ -30,6 +30,7 @@ class SkillScheduler:
         self.skill_db_mgr = SkillDBManager(core_db_path=self.core_db_path)
         self.health = HealthMonitor(chrome)
         self._skills: dict[str, BaseSkill] = {}
+        self.skill_running: str | None = None  # name of currently running skill, or None
         self._thread: threading.Thread | None = None
         self._running = False
         self._check_interval = 60  # check every 60 seconds
@@ -139,6 +140,7 @@ class SkillScheduler:
         HARD_KILL_MINUTES = 45
         result_holder = [None]
         error_holder = [None]
+        self.skill_running = skill_name
 
         def _run_skill():
             try:
@@ -174,6 +176,8 @@ class SkillScheduler:
                 "items_new": 0, "items_updated": 0,
                 "error": error_holder[0], "details": {},
             }
+
+        self.skill_running = None
 
         # Level 2: Audit tabs after every skill run (success or fail)
         try:
@@ -256,6 +260,7 @@ class SkillScheduler:
         # Wire up recovery callback: when health monitor detects Chrome
         # came back after a crash, retry any interrupted skills
         self.health.on_recovery = self._on_chrome_recovery
+        self.health.scheduler_ref = self  # Level 3 audit checks this before closing tabs
         self.health.start()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
