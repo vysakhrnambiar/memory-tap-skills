@@ -5,13 +5,13 @@
   "skills": [
     {
       "name": "youtube_history",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "file": "youtube_history.py",
       "target_site": "youtube.com",
       "auth_provider": "google",
       "description": "Collects YouTube watch history - titles, descriptions, top comments, watch progress",
       "schedule_hours": 3,
-      "checksum": "sha256:ba915e21af74353cc94461d95994ebb0e6229ac6a02ace37bd6bd6e475283c27"
+      "checksum": "sha256:800b07a860ba386861f424d0afde215a1a2d46ce9cdec32f1017b375ac020e44"
     },
     {
       "name": "chatgpt_history",

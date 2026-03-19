@@ -25,9 +25,9 @@ Verified selectors via CDP probe (2026-03-18):
 - Video page: h1 yt-formatted-string, #expand + description, comments
 - &t= parameter verified working on CDP Chrome (video loads paused)
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 """
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 import json
 import logging
@@ -607,11 +607,19 @@ class YouTubeHistorySkill(BaseSkill):
                 tab.screenshot("_scripts/e2e_screenshots/videos_chip_fail.png")
                 return [], None
 
+        # Pre-load known video IDs from DB (for consecutive_known stop)
+        known_ids = set()
+        rows = conn.execute("SELECT video_id FROM videos").fetchall()
+        for r in rows:
+            known_ids.add(r["video_id"])
+        logger.info("Pre-loaded %d known video IDs from DB", len(known_ids))
+
         # Step 7-10: Scroll and extract videos
         videos = []
         seen_video_ids = set()
         latest_date_group = None
         consecutive_misses = 0
+        consecutive_known = 0
         prev_item_count = 0
 
         while True:
@@ -698,6 +706,15 @@ class YouTubeHistorySkill(BaseSkill):
                             continue
                         seen_video_ids.add(vid)
 
+                        # Consecutive known stop: if 10 in a row are already in DB, stop
+                        if vid in known_ids:
+                            consecutive_known += 1
+                            if consecutive_known >= 10:
+                                logger.info("Consecutive known stop: 10 videos already in DB — reached old territory")
+                                return videos, latest_date_group
+                        else:
+                            consecutive_known = 0
+
                         # Use first date header as the group (top of visible area)
                         date_group = date_headers_list[0] if date_headers_list else ""
                         if not latest_date_group and date_headers_list:
@@ -711,8 +728,8 @@ class YouTubeHistorySkill(BaseSkill):
                         if not effective_date_limit:
                             effective_date_limit = (datetime.now().date() - timedelta(days=1)).isoformat()
                         if effective_date_limit and watched_date and watched_date < effective_date_limit:
-                            logger.info("Date stop: item date %s < last collected %s",
-                                        watched_date, last_collected_date)
+                            logger.info("Date stop: item date %s < limit %s",
+                                        watched_date, effective_date_limit)
                             return videos, latest_date_group
 
                         item = {
