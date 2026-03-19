@@ -352,7 +352,7 @@ def main():
     logger.info("Clearing stale tab registry from previous session...")
     try:
         from .db.core_db import get_core_connection
-        _conn = get_core_connection(_core_db_path)
+        _conn = get_core_connection()
         _conn.execute("DELETE FROM tab_registry")
         _conn.commit()
         _conn.close()
@@ -385,6 +385,7 @@ def main():
         chrome_manager=_chrome,
     )
     _service_worker.start()
+    _scheduler.health.service_worker_ref = _service_worker  # Level 3 audit checks this
 
     # 6. Start Dashboard
     from .dashboard.app import app, set_app_deps

@@ -31,6 +31,7 @@ class ServiceWorker:
                 available if needed for future extensions)
         """
         self._skills = skills
+        self.skill_running = None  # name of skill currently handling a request
         self._db_path = core_db_path
         self._chrome = chrome_manager
         self._running = False
@@ -156,6 +157,8 @@ class ServiceWorker:
         conn.close()
 
         # Execute — provider manages its own tabs
+        # Set skill_running so tab audit doesn't kill inference tabs
+        self.skill_running = to_skill
         start_time = time.time()
         try:
             payload = json.loads(row["payload"]) if row["payload"] else {}
@@ -193,3 +196,6 @@ class ServiceWorker:
             )
             conn.commit()
             conn.close()
+
+        finally:
+            self.skill_running = None

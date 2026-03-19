@@ -232,6 +232,7 @@ class ChromeManager:
         self.port: int = CDP_PORT_START
         self.cdp_base_url: str = f"http://localhost:{CDP_PORT_START}"
         self._pid: int | None = None
+        self._dashboard_tab_id: str = ""  # protected — skills must not reuse this tab
 
     def ensure_running(self) -> bool:
         """Ensure Chrome is running with our profile. Returns True if ready.
@@ -477,6 +478,9 @@ class ChromeManager:
                 except Exception:
                     pass
                 ws.close()
+                # Track dashboard tab ID so skills don't reuse it
+                if "localhost" in url and "7777" in url:
+                    self._dashboard_tab_id = tab_info.get("id", "")
                 logger.info("Opened %s in Chrome for user interaction", url)
             else:
                 logger.warning("No WebSocket URL for tab — URL may not load")
@@ -667,10 +671,13 @@ class HealthMonitor:
                 # Level 3: Periodic tab audit every ~5 minutes (ONLY when no skill running)
                 if checks_since_audit >= AUDIT_EVERY_N_CHECKS and self.healthy:
                     checks_since_audit = 0
-                    # Check if scheduler has a skill running
-                    skill_active = getattr(self, 'scheduler_ref', None) and getattr(self.scheduler_ref, 'skill_running', None)
+                    # Check if scheduler or service worker has a skill running
+                    sched_active = getattr(self, 'scheduler_ref', None) and getattr(self.scheduler_ref, 'skill_running', None)
+                    worker_active = getattr(self, 'service_worker_ref', None) and getattr(self.service_worker_ref, 'skill_running', None)
+                    skill_active = sched_active or worker_active
                     if skill_active:
-                        logger.debug("audit_tabs skipped — skill '%s' is running", self.scheduler_ref.skill_running)
+                        active_name = sched_active or worker_active
+                        logger.debug("audit_tabs skipped — skill '%s' is running", active_name)
                     else:
                         try:
                             self.chrome.audit_tabs()
