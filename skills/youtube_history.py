@@ -1,21 +1,33 @@
 """
 YouTube History Skill — collects watch history, descriptions, top comments, shorts.
 
-Verified selectors via CDP probe (2026-03-15):
-- History page: yt-lockup-view-model, a[href*="/watch?v="], a[href*="/shorts/"]
-- Date headers: div#title with font-size >= 18px
-- Watch progress: yt-thumbnail-overlay-progress-bar-view-model inner div style width %
-- Video page: h1 yt-formatted-string (title), #expand + #description-inline-expander (desc),
-  ytd-comment-thread-renderer #content-text (comment), .ytp-time-duration (duration)
-- Mute+Pause: video.muted=true; video.pause() — verified working
+CHANGELOG:
+  v0.4.0 (2026-03-19):
+    - Full Phase 1+2 rewrite with verified CDP selectors
+    - Phase 1A: clicks "Videos" tab, extracts from yt-lockup-view-model
+    - Phase 1B: clicks "Shorts" tab, extracts from ytm-shorts-lockup-view-model carousel
+    - Phase 2: new tab per video with &t= parameter (video loads paused)
+    - Page load retry: poll for target element, retry navigation, check internet
+    - _ensure_chips_visible(): scroll to top, verify Y positions before clicking
+    - Smart scroll backoff: 2s -> 3s -> 5s, 3 misses = stop
+    - Top 5 channels widget (50%+ watch completion)
+    - Shorts now have titles + views extracted from carousel
+    - "Collected at" timestamp in widget data
+    - Extraction JS split into smaller calls (was timing out with 300+ containers)
+  v0.3.2 (2026-03-17): YouTube Phase 2 date stop fix + title load retry
+  v0.3.1 (2026-03-16): Incremental save, sidebar restoration, crash retry
+  v0.2.0 (2026-03-14): Initial version
 
-Stop strategy: DATE_GROUP
-- History groups by: Today, Yesterday, day names, then "Mon DD"
-- Stop when: current date_group <= last_collected_date_group AND all videos in it are known
+Verified selectors via CDP probe (2026-03-18):
+- History page chips: .ytChipBarViewModelChipWrapper
+- Videos tab: yt-lockup-view-model (content-id on inner div)
+- Shorts tab: ytm-shorts-lockup-view-model (note ytm prefix)
+- Video page: h1 yt-formatted-string, #expand + description, comments
+- &t= parameter verified working on CDP Chrome (video loads paused)
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 """
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 import json
 import logging
@@ -48,10 +60,10 @@ def _parse_date_group(date_group: str) -> str | None:
     """Convert YouTube date group header to ISO date (YYYY-MM-DD).
 
     Patterns (verified via CDP probe 2026-03-15):
-      "Today"       → today
-      "Yesterday"   → yesterday
-      "Friday"      → last Friday
-      "Mar 8"       → 2026-03-08 (current year)
+      "Today"       -> today
+      "Yesterday"   -> yesterday
+      "Friday"      -> last Friday
+      "Mar 8"       -> 2026-03-08 (current year)
     """
     if not date_group:
         return None
@@ -318,36 +330,205 @@ class YouTubeHistorySkill(BaseSkill):
 
         return False
 
+    # ── Page load helpers ──────────────────────────────────────
+
+    def _navigate_and_verify(self, tab: CDPTab, url: str,
+                              target_selector: str, page_name: str,
+                              max_attempts: int = 2) -> bool:
+        """Navigate to URL and verify target element exists.
+
+        1. Navigate, wait for readyState=complete
+        2. Poll every 2s for target element (up to 30s)
+        3. Not found → retry navigation
+        4. Still not found → check internet
+        5. Internet down → log, return False
+        6. Internet up but element missing → screenshot, return False
+        """
+        for attempt in range(max_attempts):
+            logger.info("Navigating to %s (attempt %d/%d)", page_name, attempt + 1, max_attempts)
+            tab.navigate(url)
+
+            # Wait for readyState=complete
+            for _ in range(20):
+                ready = tab.js("return document.readyState") or ""
+                if ready == "complete":
+                    break
+                time.sleep(1)
+
+            # Poll for target element every 2s, up to 30s
+            for poll in range(15):
+                count = tab.js(
+                    f'return document.querySelectorAll("{target_selector}").length'
+                ) or 0
+                try:
+                    count = int(count)
+                except (ValueError, TypeError):
+                    count = 0
+                if count > 0:
+                    logger.info("%s loaded: %d '%s' elements found",
+                                page_name, count, target_selector)
+                    return True
+                time.sleep(2)
+
+            logger.warning("%s: '%s' not found after 30s (attempt %d)",
+                           page_name, target_selector, attempt + 1)
+
+        # All attempts failed — check why
+        try:
+            import requests as _req
+            _req.get("https://www.google.com/generate_204", timeout=5)
+            logger.error("%s: internet OK but '%s' not found — possible site change",
+                         page_name, target_selector)
+        except Exception:
+            logger.error("%s: no internet connection — skipping", page_name)
+
+        return False
+
+    # ── Chip bar helpers ──────────────────────────────────────────
+
+    def _ensure_chips_visible(self, tab: CDPTab) -> list[dict]:
+        """Scroll to top and read chip bar positions.
+
+        Returns list of {text, x, y} for each chip.
+        Retries once if chips are not in expected Y range (0-500).
+        """
+        tab.js("window.scrollTo(0, 0)")
+        wait_human(1, 1.5)
+
+        for attempt in range(2):
+            chips_raw = tab.js("""
+                return (function() {
+                    var wrappers = document.querySelectorAll('.ytChipBarViewModelChipWrapper');
+                    var out = [];
+                    for (var i = 0; i < wrappers.length; i++) {
+                        var el = wrappers[i];
+                        var r = el.getBoundingClientRect();
+                        var text = el.textContent.trim();
+                        if (text && r.width > 0) {
+                            out.push({
+                                text: text,
+                                x: Math.round(r.x + r.width / 2),
+                                y: Math.round(r.y + r.height / 2)
+                            });
+                        }
+                    }
+                    return JSON.stringify(out);
+                })();
+            """)
+
+            chips = []
+            if chips_raw:
+                try:
+                    chips = json.loads(chips_raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            if not chips:
+                logger.warning("_ensure_chips_visible: no chips found (attempt %d)", attempt + 1)
+                if attempt == 0:
+                    tab.js("window.scrollTo(0, 0)")
+                    wait_human(1.5, 2)
+                continue
+
+            # Verify all Y coordinates are in visible range
+            all_ok = all(0 < c["y"] < 500 for c in chips)
+            if all_ok:
+                logger.info("Chips visible: %s", [c["text"] for c in chips])
+                return chips
+
+            # Chips out of range — scroll to top and retry
+            logger.warning("Chips out of Y range, scrolling to top (attempt %d)", attempt + 1)
+            tab.js("window.scrollTo(0, 0)")
+            wait_human(1.5, 2)
+
+        logger.warning("_ensure_chips_visible: returning chips despite position issues")
+        return chips
+
+    def _click_chip(self, tab: CDPTab, chips: list[dict], chip_name: str) -> bool:
+        """Find and click a chip by name using CDP mouse events.
+
+        Returns True if the chip was found and clicked.
+        """
+        target = None
+        for c in chips:
+            if c["text"].strip().lower() == chip_name.strip().lower():
+                target = c
+                break
+
+        if not target:
+            logger.warning("Chip '%s' not found in: %s", chip_name, [c["text"] for c in chips])
+            return False
+
+        click_at(tab, target["x"], target["y"])
+        return True
+
+    def _verify_chip_selected(self, tab: CDPTab, expected_text: str) -> bool:
+        """Verify that the expected chip tab is selected."""
+        selected = tab.js("""
+            return (function() {
+                var chips = document.querySelectorAll('.ytChipBarViewModelChipWrapper');
+                for (var i = 0; i < chips.length; i++) {
+                    var selected = chips[i].querySelector('[aria-selected="true"]');
+                    if (selected) return chips[i].textContent.trim();
+                }
+                return '';
+            })();
+        """) or ""
+        return selected.strip().lower() == expected_text.strip().lower()
+
     # ── Collection ────────────────────────────────────────────────
 
     def collect(self, tab: CDPTab, tracker: SyncTracker,
                 limits: RunLimits) -> CollectResult:
-        """Scroll through history, collect video URLs + progress,
-        then visit each new video for details."""
+        """Phase 1A: Videos, Phase 1B: Shorts, Phase 1C: Restore,
+        Phase 2: Visit each new video page for details."""
         result = CollectResult()
         conn = tracker._skill_conn
 
-        # Phase 1: Collect video URLs + watch progress from history list
-        history_items = self._collect_history_list(tab, conn, limits)
-        result.items_found = len(history_items["videos"]) + len(history_items["shorts"])
+        # Get CDPClient for Phase 2 (new tab creation)
+        cdp_port = int(tab._cdp_base_url.split(':')[-1])
+        _cdp = CDPClient(port=cdp_port)
 
-        # Phase 2: Visit each new video page for details (mute+pause)
+        # Get last collected date for stop signal
+        row = conn.execute(
+            "SELECT value FROM collection_state WHERE key = 'last_date_group'"
+        ).fetchone()
+        last_collected_date = row["value"] if row else None
+
+        # Phase 1A: Collect videos from "Videos" tab
+        if not self._navigate_and_verify(tab, "https://www.youtube.com/feed/history",
+                                          ".ytChipBarViewModelChipWrapper", "history page"):
+            logger.error("Failed to load YouTube history page after retries")
+            return result
+
+        videos, latest_date_group = self._collect_history_list(
+            tab, conn, limits, last_collected_date
+        )
+
+        # Phase 1B: Collect shorts from "Shorts" tab
+        shorts_new_count = self._collect_shorts(tab, conn)
+
+        # Phase 1C: Restore — click "All" chip
+        self._restore_all_chip(tab)
+
+        result.items_found = len(videos) + shorts_new_count
+
+        # Phase 2: Visit each video page for details (new tab per video)
         new_count = 0
         updated_count = 0
 
-        for video in history_items["videos"]:
-            # Only check time limit, NOT date stop — Phase 2 must visit
-            # all videos from Phase 1's list regardless of date
+        for video in videos:
+            # Only time limit stops Phase 2 — NOT date stop
             if limits.time_exceeded:
                 logger.info("Stopping video visits: time limit reached")
                 break
 
             existing = conn.execute(
-                "SELECT id, title FROM videos WHERE video_id = ?",
+                "SELECT id, title, description FROM videos WHERE video_id = ?",
                 (video["video_id"],)
             ).fetchone()
 
-            if existing and existing["title"]:
+            if existing and existing["title"] and existing["description"]:
                 # Already have full details — just update watch_percent
                 if video.get("watch_percent") is not None:
                     conn.execute(
@@ -360,9 +541,10 @@ class YouTubeHistorySkill(BaseSkill):
                     updated_count += 1
                 continue
 
-            # New video — visit page for full details
+            # New video — visit page for full details in a new tab
+            video_tab = None
             try:
-                details = self._get_video_details(tab, video)
+                details = self._visit_video_page(_cdp, video)
                 self._save_video(conn, video, details)
                 new_count += 1
                 limits.item_done()
@@ -373,12 +555,11 @@ class YouTubeHistorySkill(BaseSkill):
 
             wait_human(2, 4)
 
-        # Phase 3: Shorts already saved incrementally in Phase 1
-        new_count += history_items.get("shorts_new_count", 0)
+        new_count += shorts_new_count
 
-        # Phase 4: Update collection state
-        if history_items["latest_date_group"]:
-            watched_date = _parse_date_group(history_items["latest_date_group"])
+        # Update collection state
+        if latest_date_group:
+            watched_date = _parse_date_group(latest_date_group)
             if watched_date:
                 conn.execute(
                     "INSERT OR REPLACE INTO collection_state (key, value, updated_at) "
@@ -391,338 +572,499 @@ class YouTubeHistorySkill(BaseSkill):
         result.items_updated = updated_count
         return result
 
-    def _collect_history_list(self, tab: CDPTab, conn, limits: RunLimits) -> dict:
-        """Scroll through history page collecting URLs, progress, date groups.
+    # ── Phase 1A: Videos collection ───────────────────────────────
 
-        Returns dict with 'videos', 'shorts', 'latest_date_group'.
-        Does NOT visit individual pages — just reads the list.
+    def _collect_history_list(self, tab: CDPTab, conn, limits: RunLimits,
+                              last_collected_date: str | None) -> tuple[list[dict], str | None]:
+        """Navigate to Videos chip, scroll and extract video stubs.
 
-        Uses its OWN scroll budget (max 15 scrolls for first run, 8 for subsequent)
-        to avoid consuming all RunLimits time before video visits.
+        Returns (videos_list, latest_date_group).
         """
-        tab.navigate("https://www.youtube.com/feed/history")
-        wait_human(3, 5)
+        # Step 3: Ensure chips visible
+        chips = self._ensure_chips_visible(tab)
+        if not chips:
+            logger.error("No chips found on history page — cannot filter to Videos")
+            return [], None
 
+        # Step 4: Click "Videos" chip
+        clicked = self._click_chip(tab, chips, "Videos")
+        if not clicked:
+            logger.error("Could not find 'Videos' chip")
+            return [], None
+
+        wait_human(3, 4)
+
+        # Step 5: Verify "Videos" is selected
+        if not self._verify_chip_selected(tab, "Videos"):
+            logger.warning("Videos chip not selected after click — retrying")
+            # Re-read positions and retry once
+            chips = self._ensure_chips_visible(tab)
+            clicked = self._click_chip(tab, chips, "Videos")
+            if clicked:
+                wait_human(3, 4)
+            if not self._verify_chip_selected(tab, "Videos"):
+                logger.error("Videos chip still not selected after retry — taking screenshot and stopping")
+                tab.screenshot("_scripts/e2e_screenshots/videos_chip_fail.png")
+                return [], None
+
+        # Step 7-10: Scroll and extract videos
         videos = []
-        shorts = []
         seen_video_ids = set()
-        seen_short_ids = set()
-        current_date_group = "Today"
         latest_date_group = None
-        consecutive_known = 0
-        shorts_new_count = 0
+        consecutive_misses = 0
+        prev_item_count = 0
 
-        # List phase has its own scroll budget — don't use RunLimits scroll sessions
-        is_first_run = limits.max_items > 0
-        max_list_scrolls = 15 if is_first_run else 8
-
-        for scroll_num in range(max_list_scrolls):
+        while True:
             if limits.time_exceeded:
                 break
 
-            # Extract all items visible now
+            # Extract videos (longer timeout — page can have 300+ containers)
             page_data = tab.js("""
                 return (function() {
-                    // Get date headers
-                    var headers = document.querySelectorAll("div#title");
-                    var dateGroups = [];
-                    for (var h = 0; h < headers.length; h++) {
-                        var el = headers[h];
-                        var style = window.getComputedStyle(el);
-                        var fontSize = parseFloat(style.fontSize);
-                        var text = el.textContent.trim();
-                        if (fontSize >= 18 && text.length < 50 && text !== "Shorts") {
-                            var r = el.getBoundingClientRect();
-                            dateGroups.push({text: text, y: r.y});
-                        }
-                    }
-
-                    // Get video links with progress
-                    var links = document.querySelectorAll("a[href*='/watch?v=']");
+                    var containers = document.querySelectorAll('yt-lockup-view-model');
                     var vids = [];
-                    var seenHrefs = new Set();
-                    for (var i = 0; i < links.length; i++) {
-                        var a = links[i];
-                        var href = a.getAttribute("href") || "";
-                        if (seenHrefs.has(href)) continue;
-                        seenHrefs.add(href);
-
-                        var r = a.getBoundingClientRect();
-                        if (r.width === 0) continue;
-
-                        // Find watch progress bar
-                        var container = a.closest("yt-lockup-view-model") || a.parentElement;
-                        var progressBar = container ?
-                            container.querySelector("yt-thumbnail-overlay-progress-bar-view-model div[style*='width']") :
-                            null;
-                        var watchPercent = 0;
-                        if (progressBar) {
-                            var style = progressBar.getAttribute("style") || "";
-                            var m = style.match(/width:\\s*(\\d+)%/);
-                            if (m) watchPercent = parseInt(m[1]);
+                    for (var i = 0; i < containers.length; i++) {
+                        var c = containers[i];
+                        var vid_id = '';
+                        var inner = c.querySelector('div[class*="content-id-"]');
+                        if (inner) {
+                            var m = (inner.getAttribute('class') || '').match(/content-id-([a-zA-Z0-9_-]+)/);
+                            if (m) vid_id = m[1];
                         }
-
-                        // Find which date group this video belongs to
-                        var dateGroup = "";
-                        for (var d = dateGroups.length - 1; d >= 0; d--) {
-                            if (dateGroups[d].y < r.y) {
-                                dateGroup = dateGroups[d].text;
-                                break;
+                        if (!vid_id) {
+                            var link = c.querySelector('a[href*="/watch"]');
+                            if (link) {
+                                var hm = (link.getAttribute('href') || '').match(/[?&]v=([a-zA-Z0-9_-]+)/);
+                                if (hm) vid_id = hm[1];
                             }
                         }
-
+                        if (!vid_id) continue;
+                        var titleEl = c.querySelector('h3 a span');
+                        var metaEl = c.querySelector('yt-content-metadata-view-model');
+                        var metaText = metaEl ? metaEl.textContent.trim() : '';
+                        var mp = metaText.split(' \\u2022 ');
+                        var durEl = c.querySelector('.yt-badge-shape__text');
+                        var progEl = c.querySelector('.ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment');
+                        var wp = 0;
+                        if (progEl) { var pm = (progEl.getAttribute('style') || '').match(/width:\\s*(\\d+)%/); if (pm) wp = parseInt(pm[1]); }
+                        var aEl = c.querySelector('a[href*="/watch"]');
+                        var href = aEl ? aEl.getAttribute('href') || '' : '';
+                        var tm = href.match(/[?&]t=(\\d+)s?/);
                         vids.push({
+                            video_id: vid_id,
+                            title: titleEl ? titleEl.textContent.trim() : '',
+                            channel: mp.length > 0 ? mp[0].trim() : '',
+                            views_text: mp.length > 1 ? mp[1].trim() : '',
+                            duration: durEl ? durEl.textContent.trim() : '',
+                            watchPercent: wp,
                             href: href,
-                            y: r.y,
-                            watchPercent: watchPercent,
-                            dateGroup: dateGroup,
+                            resumeTime: tm ? parseInt(tm[1]) : 0
                         });
                     }
+                    return JSON.stringify(vids);
+                })();
+            """, timeout=60)
 
-                    // Get shorts links
-                    var shortLinks = document.querySelectorAll("a[href*='/shorts/']");
-                    var shortsOut = [];
-                    var seenShorts = new Set();
-                    for (var s = 0; s < shortLinks.length; s++) {
-                        var sa = shortLinks[s];
-                        var shref = sa.getAttribute("href") || "";
-                        if (seenShorts.has(shref)) continue;
-                        seenShorts.add(shref);
-                        var sr = sa.getBoundingClientRect();
-                        if (sr.width === 0) continue;
-
-                        var stitle = sa.getAttribute("aria-label") || "";
-                        var sdateGroup = "";
-                        for (var sd = dateGroups.length - 1; sd >= 0; sd--) {
-                            if (dateGroups[sd].y < sr.y) {
-                                sdateGroup = dateGroups[sd].text;
-                                break;
-                            }
-                        }
-                        shortsOut.push({href: shref, title: stitle, dateGroup: sdateGroup});
+            # Separate call for date headers (lightweight — targeted selector)
+            date_raw = tab.js("""
+                return (function() {
+                    var out = [];
+                    var seen = {};
+                    var els = document.querySelectorAll('h2, h3, [class*="header"], [class*="title"]');
+                    var days = {Today:1, Yesterday:1, Monday:1, Tuesday:1, Wednesday:1, Thursday:1, Friday:1, Saturday:1, Sunday:1};
+                    for (var i = 0; i < els.length; i++) {
+                        var t = els[i].textContent.trim();
+                        if (t in days && !seen[t]) { seen[t] = 1; out.push(t); }
                     }
-
-                    return JSON.stringify({
-                        dateGroups: dateGroups.map(function(d) { return d.text; }),
-                        videos: vids,
-                        shorts: shortsOut,
-                    });
+                    return JSON.stringify(out);
                 })();
             """)
+            date_headers_list = []
+            if date_raw:
+                try:
+                    date_headers_list = json.loads(date_raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
             if page_data:
                 try:
-                    data = json.loads(page_data)
+                    vids_list = json.loads(page_data)
+                    if isinstance(vids_list, dict):
+                        vids_list = vids_list.get("videos", [])
 
-                    # Track date groups
-                    for dg in data.get("dateGroups", []):
-                        if not latest_date_group:
-                            latest_date_group = dg
-                        current_date_group = dg
-
-                    # Process videos
-                    for v in data.get("videos", []):
-                        vid = _extract_video_id(v["href"])
+                    for v in vids_list:
+                        vid = v.get("video_id", "")
                         if not vid or vid in seen_video_ids:
                             continue
                         seen_video_ids.add(vid)
 
-                        watched_date = _parse_date_group(v.get("dateGroup", ""))
-                        resume_secs = _extract_resume_seconds(v["href"])
+                        # Use first date header as the group (top of visible area)
+                        date_group = date_headers_list[0] if date_headers_list else ""
+                        if not latest_date_group and date_headers_list:
+                            latest_date_group = date_headers_list[0]
+
+                        watched_date = _parse_date_group(date_group)
+
+                        # Date stop: stop when items older than last_collected_date
+                        if last_collected_date and watched_date and watched_date < last_collected_date:
+                            logger.info("Date stop: item date %s < last collected %s",
+                                        watched_date, last_collected_date)
+                            return videos, latest_date_group
 
                         item = {
                             "video_id": vid,
                             "url": f"https://www.youtube.com/watch?v={vid}",
-                            "href": v["href"],
+                            "href": v.get("href", ""),
+                            "title": v.get("title", ""),
+                            "channel": v.get("channel", ""),
+                            "views_text": v.get("views_text", ""),
+                            "duration": v.get("duration", ""),
+                            "duration_seconds": _duration_to_seconds(v.get("duration", "")),
                             "watch_percent": v.get("watchPercent", 0),
-                            "resume_time_seconds": resume_secs,
-                            "date_group": v.get("dateGroup", ""),
+                            "resume_time_seconds": v.get("resumeTime", 0),
+                            "date_group": date_group,
                             "watched_date": watched_date or "",
                         }
-
-                        # Check stop signal
-                        if self.should_stop_collecting(item, tracker=type('T', (), {'_skill_conn': conn})()):
-                            consecutive_known += 1
-                            if consecutive_known >= 5:
-                                logger.info("Stop: 5 consecutive known items in old territory")
-                                return {"videos": videos, "shorts": shorts,
-                                        "latest_date_group": latest_date_group,
-                                        "shorts_new_count": shorts_new_count}
-                        else:
-                            consecutive_known = 0
-
                         videos.append(item)
 
                         # Save video stub immediately (INSERT OR IGNORE)
-                        # Phase 2 will UPDATE with full details later
                         conn.execute(
                             "INSERT OR IGNORE INTO videos "
-                            "(video_id, url, watch_percent, resume_time_seconds, "
+                            "(video_id, title, channel, url, watch_percent, resume_time_seconds, "
+                            "duration, duration_seconds, views_text, "
                             "date_group, watched_date, content_type) "
-                            "VALUES (?, ?, ?, ?, ?, ?, 'video')",
-                            (vid, item["url"], item["watch_percent"],
-                             item["resume_time_seconds"],
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'video')",
+                            (vid, item["title"], item["channel"], item["url"],
+                             item["watch_percent"], item["resume_time_seconds"],
+                             item["duration"], item["duration_seconds"],
+                             item["views_text"],
                              item["date_group"], item["watched_date"]),
                         )
                         conn.commit()
 
-                    # Process shorts — save immediately to DB
-                    for s in data.get("shorts", []):
-                        sid = _extract_short_id(s["href"])
-                        if not sid or sid in seen_short_ids:
-                            continue
-                        seen_short_ids.add(sid)
-                        short_item = {
-                            "short_id": sid,
-                            "url": f"https://www.youtube.com/shorts/{sid}",
-                            "title": s.get("title", ""),
-                            "date_group": s.get("dateGroup", ""),
-                            "watched_date": _parse_date_group(s.get("dateGroup", "")) or "",
-                        }
-                        shorts.append(short_item)
-
-                        # Save short immediately (INSERT OR IGNORE)
-                        cur = conn.execute(
-                            "INSERT OR IGNORE INTO shorts "
-                            "(short_id, title, url, date_group, watched_date) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (sid, short_item["title"], short_item["url"],
-                             short_item["date_group"], short_item["watched_date"]),
-                        )
-                        if cur.rowcount > 0:
-                            shorts_new_count += 1
-                        conn.commit()
-
                 except (json.JSONDecodeError, TypeError) as e:
-                    logger.warning("Failed to parse history page data: %s", e)
+                    logger.warning("Failed to parse video data: %s", e)
 
-            # Scroll down humanly — fixed pace for list collection
-            scroll_slowly(tab, random.randint(400, 700))
-            wait_human(1.5, 3.0)
+            # Smart scroll with backoff
+            current_count = len(seen_video_ids)
+            if current_count > prev_item_count:
+                # Got new items — reset miss counter
+                consecutive_misses = 0
+                prev_item_count = current_count
+            else:
+                # No new items — start backoff sequence
+                # Wait 2s, count again
+                tab._send("Input.dispatchMouseEvent", {
+                    "type": "mouseWheel", "x": 640, "y": 400,
+                    "deltaX": 0, "deltaY": 800,
+                })
+                wait_human(2, 2.5)
 
-        return {"videos": videos, "shorts": shorts, "latest_date_group": latest_date_group,
-                "shorts_new_count": shorts_new_count}
+                # Re-extract and check
+                recheck_count = tab.js("""
+                    return document.querySelectorAll('yt-lockup-view-model').length;
+                """) or 0
 
-    def _get_video_details(self, tab: CDPTab, video: dict) -> dict:
-        """Navigate to video page and extract title, channel, description, comment.
+                if int(recheck_count) <= current_count:
+                    # Wait 3s more
+                    wait_human(3, 3.5)
+                    recheck2 = tab.js("""
+                        return document.querySelectorAll('yt-lockup-view-model').length;
+                    """) or 0
 
-        CRITICAL: First JS call MUST be mute + pause to prevent audio.
+                    if int(recheck2) <= current_count:
+                        # Wait 5s more
+                        wait_human(5, 5.5)
+                        consecutive_misses += 1
+                        logger.info("Scroll miss %d (total ~10s wait, %d items so far)",
+                                    consecutive_misses, current_count)
+
+                        if consecutive_misses >= 3:
+                            logger.info("3 consecutive scroll misses — stopping")
+                            break
+                        continue  # skip the normal scroll below
+
+            # Normal scroll
+            tab._send("Input.dispatchMouseEvent", {
+                "type": "mouseWheel", "x": 640, "y": 400,
+                "deltaX": 0, "deltaY": 800,
+            })
+            wait_human(2, 3)
+
+        logger.info("Phase 1A complete: %d videos collected", len(videos))
+        return videos, latest_date_group
+
+    # ── Phase 1B: Shorts collection ───────────────────────────────
+
+    def _collect_shorts(self, tab: CDPTab, conn) -> int:
+        """Click Shorts chip, extract today's shorts carousel.
+
+        Returns count of new shorts saved.
         """
-        url = video.get("url", "") or f"https://www.youtube.com/watch?v={video['video_id']}"
-        tab.navigate(url)
-        wait_human(2, 3)
+        # Step 12: Ensure chips visible (page scrolled during Phase 1A)
+        chips = self._ensure_chips_visible(tab)
+        if not chips:
+            logger.warning("No chips found — skipping shorts collection")
+            return 0
 
-        # FIRST THING: mute and pause video
-        tab.js("""
-            var videos = document.querySelectorAll("video");
-            for (var i = 0; i < videos.length; i++) {
-                videos[i].muted = true;
-                videos[i].pause();
-            }
+        # Step 13: Click "Shorts" chip
+        clicked = self._click_chip(tab, chips, "Shorts")
+        if not clicked:
+            logger.warning("Could not find 'Shorts' chip — skipping")
+            return 0
+
+        wait_human(3, 4)
+
+        # Step 14: Verify "Shorts" is selected
+        if not self._verify_chip_selected(tab, "Shorts"):
+            logger.warning("Shorts chip not selected — skipping")
+            return 0
+
+        # Step 15: Find "Next" button and click to load all Today's shorts
+        next_btn = tab.js("""
+            return (function() {
+                var btns = document.querySelectorAll('[aria-label="Next"]');
+                for (var i = 0; i < btns.length; i++) {
+                    var r = btns[i].getBoundingClientRect();
+                    if (r.y > 150 && r.y < 600 && r.width > 0) {
+                        return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)});
+                    }
+                }
+                return null;
+            })();
         """)
 
-        # Wait for title to actually load (not just the element)
-        title = ""
-        for _attempt in range(5):
-            wait_human(1, 2)
-            title = tab.js("""
-                var t = document.querySelector('h1.ytd-watch-metadata yt-formatted-string, h1 yt-formatted-string');
-                return t ? t.textContent.trim() : '';
-            """) or ""
-            if len(title) > 3:
-                break
-
-        # Channel — ytd-channel-name a has the text, #owner a is just the avatar (empty text)
-        channel = tab.js("""
-            return (document.querySelector('ytd-channel-name a, #channel-name a') || {}).textContent || '';
-        """) or ""
-        channel = channel.strip()
-
-        channel_url = tab.js("""
-            var c = document.querySelector('ytd-channel-name a[href*="/@"], #channel-name a[href*="/@"]');
-            return c ? c.getAttribute('href') : '';
-        """) or ""
-
-        # Duration
-        duration = tab.js("""
-            var d = document.querySelector('.ytp-time-duration');
-            return d ? d.textContent : '';
-        """) or ""
-
-        # Views + publish date (in description area before expanding)
-        views_info = tab.js("""
-            var info = document.querySelector('#info-container yt-formatted-string, ytd-watch-info-text');
-            return info ? info.textContent.trim() : '';
-        """) or ""
-
-        # Expand description
-        tab.js("""
-            var btn = document.querySelector('#expand, #description-inline-expander #expand');
-            if (btn) btn.click();
-        """)
-        wait_human(0.5, 1)
-
-        # Description
-        description = tab.js("""
-            var d = document.querySelector('#description-inline-expander yt-attributed-string, #description yt-attributed-string');
-            return d ? d.textContent.trim().substring(0, 10000) : '';
-        """) or ""
-
-        # Parse views + date from description area or views_info
-        views_text = ""
-        publish_date = ""
-        if views_info:
-            # Pattern: "420,524 views  Feb 12, 2026"
-            v_match = re.search(r'([\d,]+\s*views)', views_info)
-            if v_match:
-                views_text = v_match.group(1)
-            d_match = re.search(r'([A-Z][a-z]{2}\s+\d{1,2},?\s*\d{4})', views_info)
-            if d_match:
-                publish_date = d_match.group(1)
-
-        # Scroll to comments
-        scroll_slowly(tab, random.randint(500, 800))
-        wait_human(2, 4)
-
-        # Top comment (may need more waiting for lazy load)
-        top_comment = ""
-        top_comment_author = ""
-        comment_data = tab.js("""
-            var c = document.querySelector('ytd-comment-thread-renderer #content-text');
-            var a = document.querySelector('ytd-comment-thread-renderer #author-text');
-            if (c) {
-                return JSON.stringify({
-                    text: c.textContent.trim().substring(0, 2000),
-                    author: a ? a.textContent.trim() : ''
-                });
-            }
-            return null;
-        """)
-
-        if comment_data:
+        if next_btn:
             try:
-                cd = json.loads(comment_data)
-                top_comment = cd.get("text", "")
-                top_comment_author = cd.get("author", "")
+                pos = json.loads(next_btn)
+                click_at(tab, pos["x"], pos["y"])
+                logger.info("Clicked 'Next' button for shorts carousel")
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        # Navigate back to history for next video
-        tab.navigate("https://www.youtube.com/feed/history")
         wait_human(2, 3)
 
-        return {
-            "title": title,
-            "channel": channel,
-            "channel_url": channel_url,
-            "duration": duration,
-            "duration_seconds": _duration_to_seconds(duration),
-            "views_text": views_text,
-            "publish_date": publish_date,
-            "description": description,
-            "top_comment": top_comment,
-            "top_comment_author": top_comment_author,
-        }
+        # Step 17: Extract from ytm-shorts-lockup-view-model containers
+        shorts_raw = tab.js("""
+            return (function() {
+                var containers = document.querySelectorAll('ytm-shorts-lockup-view-model');
+                var out = [];
+                var seenIds = {};
+                for (var i = 0; i < containers.length; i++) {
+                    var c = containers[i];
+                    var aEl = c.querySelector('a[href*="/shorts/"]');
+                    if (!aEl) continue;
+                    var href = aEl.getAttribute('href') || '';
+                    var m = href.match(/\\/shorts\\/([a-zA-Z0-9_-]{11})/);
+                    if (!m || seenIds[m[1]]) continue;
+                    seenIds[m[1]] = true;
+
+                    var text = c.textContent.trim();
+                    // Split title from views: "Some title here123K views"
+                    var titleViews = text.match(/(.+?)(\\d+\\.?\\d*[KMB]?\\s*views?)\\s*$/i);
+                    var title = '';
+                    var views = '';
+                    if (titleViews) {
+                        title = titleViews[1].trim();
+                        views = titleViews[2].trim();
+                    } else {
+                        title = text;
+                    }
+
+                    out.push({
+                        short_id: m[1],
+                        title: title.substring(0, 300),
+                        views: views,
+                        href: href
+                    });
+                }
+                return JSON.stringify(out);
+            })();
+        """)
+
+        shorts_new_count = 0
+        if shorts_raw:
+            try:
+                shorts = json.loads(shorts_raw)
+                for s in shorts:
+                    sid = s.get("short_id", "")
+                    if not sid:
+                        continue
+
+                    # Step 18: Save each short to DB immediately
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO shorts "
+                        "(short_id, title, url, views_text, date_group, watched_date) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (sid, s.get("title", ""),
+                         f"https://www.youtube.com/shorts/{sid}",
+                         s.get("views", ""),
+                         "Today",
+                         _parse_date_group("Today") or ""),
+                    )
+                    if cur.rowcount > 0:
+                        shorts_new_count += 1
+                    conn.commit()
+
+                logger.info("Phase 1B complete: %d shorts found, %d new",
+                            len(shorts), shorts_new_count)
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning("Failed to parse shorts data: %s", e)
+
+        return shorts_new_count
+
+    # ── Phase 1C: Restore ─────────────────────────────────────────
+
+    def _restore_all_chip(self, tab: CDPTab):
+        """Click 'All' chip to restore default history state."""
+        chips = self._ensure_chips_visible(tab)
+        if chips:
+            self._click_chip(tab, chips, "All")
+            wait_human(1, 2)
+            logger.info("Phase 1C: restored 'All' chip")
+
+    # ── Phase 2: Video page visits ────────────────────────────────
+
+    def _visit_video_page(self, cdp: CDPClient, video: dict) -> dict:
+        """Open video in NEW tab, extract details, close tab.
+
+        Uses CDPClient.new_tab() for proper tab isolation.
+        """
+        vid_id = video.get("video_id", "")
+        resume = video.get("resume_time_seconds", 0) or 0
+        duration_secs = video.get("duration_seconds", 0) or 0
+        watch_pct = video.get("watch_percent", 0) or 0
+
+        # Step 23: Build URL with &t=
+        url = f"https://www.youtube.com/watch?v={vid_id}"
+        if watch_pct >= 100 and duration_secs > 20:
+            url += f"&t={duration_secs - 10}s"
+        elif resume > 0:
+            url += f"&t={resume}s"
+
+        # Step 24-26: Open in NEW tab and navigate
+        video_tab = cdp.new_tab("about:blank")
+        try:
+            # Step 25: Enable Page domain
+            video_tab._send("Page.enable")
+            video_tab.drain_events("Page.loadEventFired")
+
+            # Step 26: Navigate
+            video_tab._send("Page.navigate", {"url": url}, timeout=15)
+
+            # Step 27: Wait for Page.loadEventFired (timeout 15s)
+            evt = video_tab.wait_for_event("Page.loadEventFired", timeout=15)
+            if not evt:
+                logger.warning("Video page load event timeout for %s — proceeding", vid_id)
+
+            # Step 28: Wait 10 more seconds after load
+            time.sleep(10)
+
+            # Step 29: Extract details
+
+            # Title — retry up to 5 times, 2s between
+            title = ""
+            for _attempt in range(5):
+                title = video_tab.js("""
+                    var t = document.querySelector('h1.ytd-watch-metadata yt-formatted-string, h1 yt-formatted-string');
+                    return t ? t.textContent.trim() : '';
+                """) or ""
+                if len(title) > 3:
+                    break
+                time.sleep(2)
+
+            # Channel
+            channel = video_tab.js("""
+                return (document.querySelector('ytd-channel-name a, #channel-name a') || {}).textContent || '';
+            """) or ""
+            channel = channel.strip()
+
+            # Channel URL
+            channel_url = video_tab.js("""
+                var c = document.querySelector('ytd-channel-name a[href*="/@"], #channel-name a[href*="/@"]');
+                return c ? c.getAttribute('href') : '';
+            """) or ""
+
+            # Description — click #expand first
+            video_tab.js("""
+                var btn = document.querySelector('#expand, #description-inline-expander #expand');
+                if (btn) btn.click();
+            """)
+            wait_human(0.5, 1)
+
+            description = video_tab.js("""
+                var d = document.querySelector('#description-inline-expander yt-attributed-string, #description yt-attributed-string');
+                return d ? d.textContent.trim().substring(0, 10000) : '';
+            """) or ""
+
+            # Duration
+            duration = video_tab.js("""
+                var d = document.querySelector('.ytp-time-duration');
+                return d ? d.textContent : '';
+            """) or ""
+
+            # Views text
+            views_text = video_tab.js("""
+                var info = document.querySelector('#info-container yt-formatted-string, ytd-watch-info-text');
+                return info ? info.textContent.trim() : '';
+            """) or ""
+
+            # Top comment — scroll down first
+            scroll_slowly(video_tab, random.randint(500, 800))
+            wait_human(2, 4)
+
+            top_comment = ""
+            top_comment_author = ""
+            comment_data = video_tab.js("""
+                var c = document.querySelector('ytd-comment-thread-renderer #content-text');
+                var a = document.querySelector('ytd-comment-thread-renderer #author-text');
+                if (c) {
+                    return JSON.stringify({
+                        text: c.textContent.trim().substring(0, 2000),
+                        author: a ? a.textContent.trim() : ''
+                    });
+                }
+                return null;
+            """)
+
+            if comment_data:
+                try:
+                    cd = json.loads(comment_data)
+                    top_comment = cd.get("text", "")
+                    top_comment_author = cd.get("author", "")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            # Parse views + date from views_text
+            parsed_views = ""
+            publish_date = ""
+            if views_text:
+                v_match = re.search(r'([\d,]+\s*views)', views_text)
+                if v_match:
+                    parsed_views = v_match.group(1)
+                d_match = re.search(r'([A-Z][a-z]{2}\s+\d{1,2},?\s*\d{4})', views_text)
+                if d_match:
+                    publish_date = d_match.group(1)
+
+            return {
+                "title": title,
+                "channel": channel,
+                "channel_url": channel_url,
+                "duration": duration,
+                "duration_seconds": _duration_to_seconds(duration),
+                "views_text": parsed_views or views_text,
+                "publish_date": publish_date,
+                "description": description,
+                "top_comment": top_comment,
+                "top_comment_author": top_comment_author,
+            }
+
+        finally:
+            # Step 31-32: Close tab, cleanup orphans
+            try:
+                cdp.close_tab(video_tab)
+            except Exception:
+                pass
 
     def _save_video(self, conn, video: dict, details: dict) -> None:
         """Insert or update a video in the skill DB."""
@@ -798,12 +1140,23 @@ class YouTubeHistorySkill(BaseSkill):
                 title="Recent Videos",
                 display_type="timeline",
                 data_query=(
-                    "SELECT title, channel, duration, watched_date, url "
+                    "SELECT title, channel, duration, watched_date, url, synced_at "
                     "FROM videos ORDER BY watched_date DESC LIMIT 8"
                 ),
                 refresh_seconds=300,
                 size="medium",
                 click_action="skill_page#history",
+            ),
+            WidgetDefinition(
+                name="top_channels",
+                title="Top Channels",
+                display_type="list",
+                data_query=(
+                    "SELECT channel, COUNT(*) as watch_count FROM videos "
+                    "WHERE watch_percent >= 50 AND channel != '' "
+                    "GROUP BY channel ORDER BY watch_count DESC LIMIT 5"
+                ),
+                size="small",
             ),
         ]
 
@@ -896,11 +1249,19 @@ class YouTubeHistorySkill(BaseSkill):
         completed = conn.execute(
             "SELECT COUNT(*) as c FROM videos WHERE watch_percent = 100"
         ).fetchone()["c"]
+        # Top channel
+        top_channel_row = conn.execute(
+            "SELECT channel, COUNT(*) as cnt FROM videos "
+            "WHERE watch_percent >= 50 AND channel != '' "
+            "GROUP BY channel ORDER BY cnt DESC LIMIT 1"
+        ).fetchone()
+        top_channel = top_channel_row["channel"] if top_channel_row else "—"
         return [
             {"label": "Videos", "value": total_v},
             {"label": "Shorts", "value": total_s},
             {"label": "Unfinished", "value": unfinished},
             {"label": "Completed", "value": completed},
+            {"label": "Top Channel", "value": top_channel},
         ]
 
     def get_search_results(self, conn, query: str, limit: int = 20) -> list[dict]:

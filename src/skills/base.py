@@ -15,6 +15,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
+import requests as _requests
+
 from ..cdp_client import CDPTab, CDPClient
 from ..db.core_db import add_alert, add_notification, get_core_connection, CORE_DB_PATH
 from ..db.skill_db import SkillDBManager
@@ -317,6 +319,23 @@ class BaseSkill(ABC):
         return self.manifest.login_url or self.manifest.target_url
 
     @staticmethod
+    def check_internet() -> bool:
+        """Check internet connectivity using Google's generate_204 endpoint.
+
+        Tries once, waits 3s, retries once on failure. Returns True if connected.
+        """
+        for attempt in range(2):
+            try:
+                resp = _requests.get("https://www.google.com/generate_204", timeout=5)
+                if resp.status_code == 204:
+                    return True
+            except Exception:
+                pass
+            if attempt == 0:
+                _time.sleep(3)
+        return False
+
+    @staticmethod
     def _save_error_screenshot(tab: CDPTab, skill_name: str) -> str | None:
         """Take a screenshot on error/warning for debugging."""
         try:
@@ -369,6 +388,11 @@ class BaseSkill(ABC):
         """
         m = self.manifest
         core_path = core_db_path or CORE_DB_PATH
+
+        # Check internet before anything else
+        if not self.check_internet():
+            logger.warning("No internet — skipping skill %s", m.name)
+            return CollectResult(error=f"No internet connection — skipping skill {m.name}")
 
         # Ensure skill DB schema exists
         skill_db_mgr.ensure_schema(self)

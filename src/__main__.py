@@ -124,9 +124,11 @@ def _register_startup():
 
     try:
         if getattr(sys, 'frozen', False):
-            # Running as PyInstaller exe
-            exe_path = sys.executable
-            cmd = f'"{exe_path}"'
+            # Always register the installed location, not wherever we ran from
+            _install_exe = os.path.join(
+                os.environ.get("LOCALAPPDATA", ""), "MemoryTap", "MemoryTap.exe"
+            )
+            cmd = f'"{_install_exe}"'
         else:
             # Running as script — register python -m src
             python_exe = sys.executable
@@ -310,6 +312,17 @@ def main():
 
     # Show splash immediately so user knows something is happening
     threading.Thread(target=_show_splash, daemon=True).start()
+
+    # 0. Self-copy exe to %LOCALAPPDATA%/MemoryTap/ if not already there
+    _install_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "MemoryTap")
+    _exe_target = os.path.join(_install_dir, "MemoryTap.exe")
+    _current_exe = os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)
+    if getattr(sys, 'frozen', False) and os.path.normcase(_current_exe) != os.path.normcase(_exe_target):
+        os.makedirs(_install_dir, exist_ok=True)
+        try:
+            shutil.copy2(_current_exe, _exe_target)
+        except Exception:
+            pass  # May fail if target is locked — that's OK, it means it's already running from there
 
     logger.info("=" * 50)
     logger.info("Memory Tap starting...")

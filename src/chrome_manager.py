@@ -552,6 +552,7 @@ class HealthMonitor:
         self.chrome = chrome
         self.interval = interval
         self.healthy = False
+        self.internet_connected = True  # assume connected at start
         self.last_check: dict | None = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -601,6 +602,23 @@ class HealthMonitor:
                 status["tab_count"] = len(tabs)
             except Exception:
                 pass
+
+        # 4. Internet connectivity
+        inet_ok = False
+        try:
+            inet_resp = requests.get("https://www.google.com/generate_204", timeout=5)
+            inet_ok = inet_resp.status_code == 204
+        except Exception:
+            pass
+        status["internet"] = inet_ok
+
+        # Log only on state change
+        was_internet = self.internet_connected
+        self.internet_connected = inet_ok
+        if was_internet and not inet_ok:
+            logger.warning("Internet connectivity LOST")
+        elif not was_internet and inet_ok:
+            logger.info("Internet connectivity RESTORED")
 
         # Overall health
         status["healthy"] = status["pid_alive"] and status["cdp_responds"]

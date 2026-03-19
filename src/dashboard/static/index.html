@@ -213,6 +213,11 @@
     </style>
 </head>
 <body>
+    <!-- Internet down banner -->
+    <div id="internet-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:white;text-align:center;padding:10px 16px;font-size:14px;font-weight:600;">
+        No internet connection — skills paused
+    </div>
+
     <!-- Indemnity Overlay -->
     <div id="indemnity" class="overlay" style="display:none">
         <div class="overlay-box">
@@ -279,9 +284,11 @@
         // ============================================================
         // Navigation
         // ============================================================
-        function navigate(page, data) {
+        var _pendingConvId = null;
+        function navigate(page, data, convId) {
             currentPage = page;
             currentSkill = data || null;
+            _pendingConvId = convId || null;
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
             const navBtn = document.getElementById('nav-' + page);
             if (navBtn) navBtn.classList.add('active');
@@ -377,10 +384,10 @@
                         const hasMessages = item.id && item.message_count && item.message_count > 0;
                         const skillName = item._skill || _timelineSkill || '';
                         return `
-                        <div class="timeline-item${hasMessages ? ' clickable' : ''}"
-                             ${hasMessages ? `onclick="event.preventDefault(); toggleMessages('${skillName}', ${item.id}, this)"` : ''}>
+                        <div class="timeline-item${hasMessages ? ' clickable' : ''}" data-conv-id="${item.id || ''}"
+                             ${hasMessages ? `onclick="event.preventDefault(); if(currentPage==='skill'){toggleMessages('${skillName}',${item.id},this)}else{navigate('skill','${skillName}',${item.id})}"` : ''}>
                             <div class="item-title">${esc(item.title || '')}</div>
-                            <div class="item-meta">${esc(item.channel || item.source || '')} ${item.duration ? '&middot; ' + formatDuration(item.duration, item.watch_percent) : ''} ${item.message_count ? '&middot; ' + item.message_count + ' msgs' : ''}</div>
+                            <div class="item-meta">${esc(item.channel || item.source || '')} ${item.duration ? '&middot; ' + formatDuration(item.duration, item.watch_percent) : ''} ${item.message_count ? '&middot; ' + item.message_count + ' msgs' : ''} ${item.synced_at ? '&middot; Collected at ' + new Date(item.synced_at).toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'}) : ''}</div>
                             <div class="messages-container" style="display:none"></div>
                         </div>`;
                     }).join('')}
@@ -769,8 +776,19 @@
                 el.innerHTML = html;
 
                 // Load section data (each section rendered by its display_type)
-                for (const section of page.sections) {
-                    loadSectionData(skillName, section);
+                const sectionPromises = page.sections.map(s => loadSectionData(skillName, s));
+                await Promise.all(sectionPromises);
+
+                // Auto-scroll + auto-expand if navigated with a conversation ID
+                if (_pendingConvId) {
+                    const targetEl = document.querySelector(`[data-conv-id="${_pendingConvId}"]`);
+                    if (targetEl) {
+                        targetEl.scrollIntoView({behavior: 'smooth', block: 'center'});
+                        // Auto-expand messages
+                        const toggleBtn = targetEl.querySelector('.messages-container') || targetEl;
+                        toggleMessages(skillName, _pendingConvId, targetEl);
+                    }
+                    _pendingConvId = null;
                 }
             } catch(e) {
                 el.innerHTML = `<div class="back-btn" onclick="navigate('home')">&larr; Back</div><div class="empty">Failed to load skill page: ${e}</div>`;
@@ -1057,7 +1075,7 @@
         // ============================================================
         function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
         function formatDate(d) {
-            if (!d) return '';
+            if (!d || d === 'None' || d === 'null' || d === 'undefined') return 'No date';
             // Handle both "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS" formats
             const dateOnly = d.includes(' ') ? d.split(' ')[0] : d.includes('T') ? d.split('T')[0] : d;
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return d; // Return as-is if not a date
@@ -1085,11 +1103,33 @@
         }
 
         // ============================================================
+        // Internet connectivity banner
+        // ============================================================
+        async function checkInternetStatus() {
+            try {
+                const resp = await fetch('/api/system/health');
+                const data = await resp.json();
+                const banner = document.getElementById('internet-banner');
+                if (data.internet === false) {
+                    banner.style.display = 'block';
+                    document.body.style.paddingTop = banner.offsetHeight + 'px';
+                } else {
+                    banner.style.display = 'none';
+                    document.body.style.paddingTop = '0';
+                }
+            } catch (e) {
+                // If dashboard API itself fails, don't show internet banner
+            }
+        }
+
+        // ============================================================
         // Init
         // ============================================================
         checkConsent();
         setInterval(loadNotifs, 15000);
         loadNotifs();
+        checkInternetStatus();
+        setInterval(checkInternetStatus, 30000);
     </script>
 </body>
 </html>

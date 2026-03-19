@@ -797,6 +797,7 @@ async def api_system_health():
         "chrome_running": False,
         "chrome_port": None,
         "chrome_pid": None,
+        "internet": True,
         "health_monitor": None,
         "skills_loaded": 0,
         "db_sizes": [],
@@ -809,8 +810,10 @@ async def api_system_health():
 
     if _scheduler:
         health["skills_loaded"] = len(_scheduler._skills)
-        if _scheduler.health.last_check:
-            health["health_monitor"] = _scheduler.health.last_check
+        if hasattr(_scheduler, 'health') and _scheduler.health:
+            if _scheduler.health.last_check:
+                health["health_monitor"] = _scheduler.health.last_check
+            health["internet"] = getattr(_scheduler.health, 'internet_connected', True)
         # DB sizes
         try:
             health["db_sizes"] = _scheduler.skill_db_mgr.list_skill_dbs()

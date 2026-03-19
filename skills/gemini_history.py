@@ -1,21 +1,25 @@
 """
 Gemini History Skill — collects conversation history with messages, thinking blocks, sources.
 
+CHANGELOG:
+  v0.3.3 (2026-03-19):
+    - First run cap increased to 50 (was 30)
+    - Stop after 10 consecutive known (was 5)
+    - "Collected at" timestamp in widget query
+    - Fixed missing space in SQL query for thinking widget
+  v0.3.1 (2026-03-17): New tab per conversation (SPA nav fix), content hydration wait
+  v0.3.0 (2026-03-16): Sidebar expansion, message extraction retry
+  v0.2.0 (2026-03-14): Initial version
+
 Verified selectors via CDP probe (2026-03-15):
 - Sidebar: a[href*="/app/"] with hex ID filter
-- Messages: <user-query> (user), <model-response> (assistant) — trivial role detection
-- Thinking blocks: <collapsible-button> with text "Thoughts"/"Show thinking" — click to expand
-- Code blocks: pre code inside model-response
-- Sources: inline a[href*="http"] inside model-response
+- Messages: <user-query>, <model-response> — new tab per conversation
+- Thinking blocks: model-thoughts element
 - Login: SID cookie on .google.com
 
-Stop strategy: CONSECUTIVE_KNOWN
-- No date headers in sidebar
-- Track by conversation hex ID
-
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 """
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 import json
 import logging
@@ -48,7 +52,7 @@ class GeminiHistorySkill(BaseSkill):
             auth_provider="google",
             schedule_hours=3,
             login_url="https://accounts.google.com/ServiceLogin",
-            max_items_first_run=30,
+            max_items_first_run=50,
             max_items_per_run=0,
             max_minutes_per_run=30,
         )
@@ -159,8 +163,8 @@ class GeminiHistorySkill(BaseSkill):
     # ── Stop signal ───────────────────────────────────────────────
 
     def should_stop_collecting(self, item: dict, tracker: SyncTracker) -> bool:
-        """CONSECUTIVE_KNOWN stop: stop after 5 consecutive known unchanged conversations."""
-        return item.get("_consecutive_known", 0) >= 5
+        """CONSECUTIVE_KNOWN stop: stop after 10 consecutive known unchanged conversations."""
+        return item.get("_consecutive_known", 0) >= 10
 
     # ── Collection ────────────────────────────────────────────────
 
@@ -609,7 +613,7 @@ class GeminiHistorySkill(BaseSkill):
                 title="Recent Gemini Conversations",
                 display_type="timeline",
                 data_query=(
-                    "SELECT id, title, url, message_count, last_updated"
+                    "SELECT id, title, url, message_count, last_updated, synced_at "
                     "FROM conversations ORDER BY last_updated DESC LIMIT 8"
                 ),
                 refresh_seconds=300,

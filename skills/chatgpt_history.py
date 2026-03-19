@@ -1,25 +1,26 @@
 """
 ChatGPT History Skill — collects conversation history with messages, sources, code blocks.
 
+CHANGELOG:
+  v0.3.3 (2026-03-19):
+    - First run cap increased to 50 (was 30)
+    - Stop after 10 consecutive known (was 5) — collects more before stopping
+    - "Collected at" timestamp in widget query
+  v0.3.2 (2026-03-17): Sidebar scroll fix, bottom-first collection order
+  v0.3.1 (2026-03-16): Incremental save, sidebar restoration, crash retry
+  v0.2.0 (2026-03-14): Initial version
+
 Verified selectors via CDP probe (2026-03-15):
 - Sidebar: nav a[href*="/c/"] — regular chats, UUID in URL
-- Messages: [data-message-id] with [data-message-author-role] ("user" / "assistant")
-- Sources: group/footnote bg-token-bg-primary links
-- Code blocks: pre code inside [data-message-id]
-- Timestamps: hidden behind "..." click, format "Feb 18, 2:07 PM"
+- Messages: [data-message-id] with [data-message-author-role]
 - Login: __Secure-next-auth.session-token.0 cookie on .chatgpt.com
 
-Stop strategy: CONSECUTIVE_KNOWN
-- No date headers in sidebar
-- Track by conversation UUID + position
-- Updated conversations move to top
-
-Scope: Regular chats (/c/) only. Projects (/g/g-p-), GPTs (/g/g-), Group chats (/gg/) excluded.
+Scope: Regular chats (/c/) only. Projects, GPTs, Group chats excluded.
 Text only — no images, artifacts, files.
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 """
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 import json
 import logging
@@ -52,7 +53,7 @@ class ChatGPTHistorySkill(BaseSkill):
             auth_provider="openai",
             schedule_hours=3,
             login_url="https://chatgpt.com/auth/login",
-            max_items_first_run=30,   # 30 conversations on first run
+            max_items_first_run=50,   # 50 conversations on first run
             max_items_per_run=0,      # unlimited for subsequent
             max_minutes_per_run=30,
         )
@@ -165,10 +166,10 @@ class ChatGPTHistorySkill(BaseSkill):
     # ── Stop signal ───────────────────────────────────────────────
 
     def should_stop_collecting(self, item: dict, tracker: SyncTracker) -> bool:
-        """CONSECUTIVE_KNOWN stop: stop after 5 consecutive known, unchanged conversations."""
+        """CONSECUTIVE_KNOWN stop: stop after 10 consecutive known, unchanged conversations."""
         # This is tracked in collect() via consecutive_known counter
         # The item dict has 'is_known' and 'is_updated' flags
-        return item.get("_consecutive_known", 0) >= 5
+        return item.get("_consecutive_known", 0) >= 10
 
     # ── Collection ────────────────────────────────────────────────
 
@@ -493,7 +494,7 @@ class ChatGPTHistorySkill(BaseSkill):
                 title="Recent ChatGPT Conversations",
                 display_type="timeline",
                 data_query=(
-                    "SELECT id, title, url, message_count, last_updated "
+                    "SELECT id, title, url, message_count, last_updated, synced_at "
                     "FROM conversations ORDER BY last_updated DESC LIMIT 8"
                 ),
                 refresh_seconds=300,
