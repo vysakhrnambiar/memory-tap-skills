@@ -25,9 +25,9 @@ Verified selectors via CDP probe (2026-03-18):
 - Video page: h1 yt-formatted-string, #expand + description, comments
 - &t= parameter verified working on CDP Chrome (video loads paused)
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 """
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 import json
 import logging
@@ -705,8 +705,12 @@ class YouTubeHistorySkill(BaseSkill):
 
                         watched_date = _parse_date_group(date_group)
 
-                        # Date stop: stop when items older than last_collected_date
-                        if last_collected_date and watched_date and watched_date < last_collected_date:
+                        # Date stop: stop when items older than boundary
+                        # First run: limit to Today + Yesterday (no last_collected_date yet)
+                        effective_date_limit = last_collected_date
+                        if not effective_date_limit:
+                            effective_date_limit = (datetime.now().date() - timedelta(days=1)).isoformat()
+                        if effective_date_limit and watched_date and watched_date < effective_date_limit:
                             logger.info("Date stop: item date %s < last collected %s",
                                         watched_date, last_collected_date)
                             return videos, latest_date_group
