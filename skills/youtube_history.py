@@ -2,6 +2,7 @@
 YouTube History Skill — collects watch history, descriptions, top comments, shorts.
 
 CHANGELOG:
+  v0.4.5 (2026-03-19): Fix description extraction — poll #expanded selector + snippet fallback
   v0.4.0 (2026-03-19):
     - Full Phase 1+2 rewrite with verified CDP selectors
     - Phase 1A: clicks "Videos" tab, extracts from yt-lockup-view-model
@@ -25,9 +26,9 @@ Verified selectors via CDP probe (2026-03-18):
 - Video page: h1 yt-formatted-string, #expand + description, comments
 - &t= parameter verified working on CDP Chrome (video loads paused)
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 """
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 import json
 import logging
