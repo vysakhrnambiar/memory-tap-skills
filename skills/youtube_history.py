@@ -25,9 +25,9 @@ Verified selectors via CDP probe (2026-03-18):
 - Video page: h1 yt-formatted-string, #expand + description, comments
 - &t= parameter verified working on CDP Chrome (video loads paused)
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 """
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 import json
 import logging
@@ -992,21 +992,15 @@ class YouTubeHistorySkill(BaseSkill):
             url += f"&t={resume}s"
 
         # Step 24-26: Open in NEW tab and navigate
-        video_tab = cdp.new_tab("about:blank")
+        video_tab = cdp.new_tab(url)
         try:
-            # Step 25: Enable Page domain
-            video_tab._send("Page.enable")
-            video_tab.drain_events("Page.loadEventFired")
-
-            # Step 26: Navigate
-            video_tab._send("Page.navigate", {"url": url}, timeout=15)
-
-            # Step 27: Wait for Page.loadEventFired (timeout 15s)
-            evt = video_tab.wait_for_event("Page.loadEventFired", timeout=15)
-            if not evt:
-                logger.warning("Video page load event timeout for %s — proceeding", vid_id)
-
-            # Step 28: Wait 10 more seconds after load
+            # Wait for page to fully load
+            for _w in range(15):
+                ready = video_tab.js("return document.readyState") or ""
+                if ready == "complete":
+                    break
+                time.sleep(1)
+            # Extra wait for dynamic content (description, comments)
             time.sleep(10)
 
             # Step 29: Extract details
@@ -1034,12 +1028,12 @@ class YouTubeHistorySkill(BaseSkill):
                 return c ? c.getAttribute('href') : '';
             """) or ""
 
-            # Description — click #expand first
+            # Description — click #expand first, then wait for content
             video_tab.js("""
                 var btn = document.querySelector('#expand, #description-inline-expander #expand');
                 if (btn) btn.click();
             """)
-            wait_human(0.5, 1)
+            time.sleep(3)
 
             description = video_tab.js("""
                 var d = document.querySelector('#description-inline-expander yt-attributed-string, #description yt-attributed-string');
