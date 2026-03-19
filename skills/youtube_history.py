@@ -1028,17 +1028,26 @@ class YouTubeHistorySkill(BaseSkill):
                 return c ? c.getAttribute('href') : '';
             """) or ""
 
-            # Description — click #expand first, then wait for content
+            # Description — click #expand, poll for full content, fall back to snippet
             video_tab.js("""
                 var btn = document.querySelector('#expand, #description-inline-expander #expand');
                 if (btn) btn.click();
             """)
-            time.sleep(3)
-
-            description = video_tab.js("""
-                var d = document.querySelector('#description-inline-expander yt-attributed-string, #description yt-attributed-string');
-                return d ? d.textContent.trim().substring(0, 10000) : '';
-            """) or ""
+            description = ""
+            for _desc_attempt in range(5):
+                time.sleep(2)
+                description = video_tab.js("""
+                    var d = document.querySelector('#expanded yt-attributed-string');
+                    return d ? d.textContent.trim().substring(0, 10000) : '';
+                """) or ""
+                if description:
+                    break
+            # Fall back to snippet preview if expand failed
+            if not description:
+                description = video_tab.js("""
+                    var d = document.querySelector('#snippet-text yt-attributed-string');
+                    return d ? d.textContent.trim().substring(0, 10000) : '';
+                """) or ""
 
             # Duration
             duration = video_tab.js("""

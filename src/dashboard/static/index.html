@@ -1120,7 +1120,8 @@
         }
         function timeAgo(iso) {
             if (!iso) return '';
-            const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+            const ts = iso.endsWith('Z') ? iso : iso + 'Z';
+            const diff = (Date.now() - new Date(ts).getTime()) / 1000;
             if (diff < 60) return 'just now';
             if (diff < 3600) return Math.floor(diff/60) + 'm ago';
             if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
