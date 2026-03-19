@@ -5,6 +5,7 @@ Runs in a background thread. Each skill has a schedule_hours setting.
 Skills execute sequentially (one Chrome tab at a time).
 """
 import importlib
+import json
 import logging
 import os
 import sys
@@ -251,11 +252,55 @@ class SkillScheduler:
             except Exception as e:
                 logger.error("Retry failed for %s: %s", name, e)
 
+    def _register_services(self):
+        """Register services from all loaded skills into service_registry.
+
+        Clears old entries first (skills may have changed), then writes
+        fresh entries for every service defined by get_services().
+        """
+        conn = get_core_connection(self.core_db_path)
+        try:
+            # Clear old service registry entries
+            conn.execute("DELETE FROM service_registry")
+            conn.commit()
+
+            total = 0
+            for skill_name, skill in self._skills.items():
+                services = skill.get_services()
+                for svc in services:
+                    conn.execute(
+                        "INSERT INTO service_registry "
+                        "(skill_name, service_name, description, input_schema, "
+                        "output_schema, max_duration_seconds, status) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 'ready')",
+                        (
+                            skill_name,
+                            svc.name,
+                            svc.description,
+                            json.dumps(svc.input_schema, ensure_ascii=False),
+                            json.dumps(svc.output_schema, ensure_ascii=False),
+                            svc.max_duration_seconds,
+                        ),
+                    )
+                    total += 1
+                    logger.info("Registered service: %s.%s", skill_name, svc.name)
+            conn.commit()
+            if total:
+                logger.info("Registered %d service(s) from %d skill(s)",
+                            total, len(self._skills))
+        except Exception as e:
+            logger.error("Failed to register services: %s", e)
+        finally:
+            conn.close()
+
     def start(self):
         """Start the scheduler background thread and health monitor."""
         if self._running:
             return
         self._running = True
+
+        # Register services from all loaded skills
+        self._register_services()
 
         # Wire up recovery callback: when health monitor detects Chrome
         # came back after a crash, retry any interrupted skills

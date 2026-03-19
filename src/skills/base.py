@@ -7,6 +7,7 @@ using CDP, collect data, and store it in SQLite via SyncTracker.
 Skills are published to: https://github.com/vysakhrnambiar/memory-tap-skills
 The system auto-pulls new versions from that repo.
 """
+import json
 import logging
 import os
 import time as _time
@@ -136,6 +137,16 @@ class SkillManifest:
     max_items_first_run: int = 100   # item cap on first run (0 = unlimited)
     max_items_per_run: int = 0       # 0 = unlimited for subsequent runs
     max_minutes_per_run: int = 30    # time cap per run
+
+
+@dataclass
+class ServiceDefinition:
+    """Definition of a service that a skill provides to other skills."""
+    name: str
+    description: str = ""
+    input_schema: dict = field(default_factory=dict)
+    output_schema: dict = field(default_factory=dict)
+    max_duration_seconds: int = 60
 
 
 @dataclass
@@ -317,6 +328,102 @@ class BaseSkill(ABC):
     def get_login_url(self) -> str:
         """URL to open for user to log in. Defaults to target_url."""
         return self.manifest.login_url or self.manifest.target_url
+
+    # --- Service provider/consumer methods ---
+
+    def get_services(self) -> list[ServiceDefinition]:
+        """Return list of services this skill provides to other skills.
+
+        Override in inference skills (e.g. ChatGPTInferenceSkill).
+        Collection-only skills return empty list (default).
+        """
+        return []
+
+    def handle_request(self, service_name: str, payload: dict, cdp: CDPClient) -> dict:
+        """Handle an incoming service request from another skill.
+
+        Override in inference skills. The skill opens/closes its own tabs.
+        Args:
+            service_name: operation name (e.g. "summarize", "execute_prompt")
+            payload: request data matching the service's input_schema
+            cdp: CDPClient instance for creating tabs
+        Returns:
+            Result dict matching the service's output_schema
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement handle_request()"
+        )
+
+    def request_service(self, full_service_name: str, payload: dict,
+                        timeout: int = 60) -> dict:
+        """Request a service from another skill via the DB queue.
+
+        Args:
+            full_service_name: "skill_name.operation" (e.g. "chatgpt_inference.summarize")
+            payload: request data matching the service's input_schema
+            timeout: max seconds to wait for result
+        Returns:
+            Result dict on success, or {"error": "..."} on failure/timeout
+        """
+        # Parse skill_name and service_name
+        parts = full_service_name.split(".", 1)
+        if len(parts) != 2:
+            return {"error": f"Invalid service name format: '{full_service_name}' (expected 'skill.operation')"}
+        to_skill, service_name = parts
+
+        core_path = self._core_db_path if hasattr(self, '_core_db_path') else CORE_DB_PATH
+
+        # Check service registry
+        conn = get_core_connection(core_path)
+        reg = conn.execute(
+            "SELECT status FROM service_registry WHERE skill_name = ? AND service_name = ?",
+            (to_skill, service_name),
+        ).fetchone()
+        if not reg:
+            conn.close()
+            return {"error": f"No provider for '{full_service_name}'"}
+        if reg["status"] != "ready":
+            conn.close()
+            return {"error": f"Service '{full_service_name}' is not ready (status: {reg['status']})"}
+
+        # Create PENDING request
+        from_skill = self.manifest.name
+        cur = conn.execute(
+            "INSERT INTO service_requests (from_skill, to_skill, service_name, payload) "
+            "VALUES (?, ?, ?, ?)",
+            (from_skill, to_skill, service_name, json.dumps(payload, ensure_ascii=False)),
+        )
+        req_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        logger.info("Service request %d: %s -> %s.%s", req_id, from_skill, to_skill, service_name)
+
+        # Poll for result
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            _time.sleep(2)
+            conn = get_core_connection(core_path)
+            row = conn.execute(
+                "SELECT state, result, error FROM service_requests WHERE id = ?",
+                (req_id,),
+            ).fetchone()
+            conn.close()
+
+            if not row:
+                return {"error": f"Service request {req_id} disappeared"}
+
+            if row["state"] == "COMPLETED":
+                try:
+                    return json.loads(row["result"]) if row["result"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    return {"error": f"Invalid result JSON from service request {req_id}"}
+
+            if row["state"] in ("FAILED", "TIMEOUT"):
+                return {"error": row["error"] or f"Service request {req_id} {row['state']}"}
+
+        # Timeout — mark request as timed out by consumer
+        logger.warning("Service request %d timed out after %ds", req_id, timeout)
+        return {"error": f"Timeout waiting for '{full_service_name}' after {timeout}s"}
 
     @staticmethod
     def check_internet() -> bool:

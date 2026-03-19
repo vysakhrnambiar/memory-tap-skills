@@ -142,6 +142,39 @@ def init_core_db(db_path: str | None = None):
         )
     """)
 
+    # --- service_registry ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS service_registry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            skill_name TEXT NOT NULL,
+            service_name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            input_schema TEXT DEFAULT '{}',
+            output_schema TEXT DEFAULT '{}',
+            max_duration_seconds INTEGER DEFAULT 60,
+            status TEXT DEFAULT 'ready',
+            UNIQUE(skill_name, service_name)
+        )
+    """)
+
+    # --- service_requests ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS service_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_skill TEXT NOT NULL,
+            to_skill TEXT NOT NULL,
+            service_name TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}',
+            state TEXT NOT NULL DEFAULT 'PENDING',
+            result TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            claimed_at TEXT,
+            completed_at TEXT,
+            duration_seconds REAL
+        )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Core DB initialized: %s", db_path or CORE_DB_PATH)

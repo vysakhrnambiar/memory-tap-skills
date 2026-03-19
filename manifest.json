@@ -32,6 +32,12 @@
       "description": "Collects Gemini conversations - messages, thinking blocks, sources",
       "schedule_hours": 3,
       "checksum": "sha256:1286b31817389b47ab83d4c113ce12182bdc724b5e8dad38c89e03aef331cdf8"
+    },
+    {
+      "name": "chatgpt_inference",
+      "file": "chatgpt_inference.py",
+      "version": "0.1.0",
+      "checksum": "sha256:e31a3c42cc67c5c41e2be47c71765aaa93d73ce16d96a5776ce4e9aa807746a5"
     }
   ]
 }

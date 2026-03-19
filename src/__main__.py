@@ -47,6 +47,7 @@ logger = logging.getLogger("memory_tap")
 from .chrome_manager import ChromeManager
 from .db.core_db import init_core_db, get_setting, set_setting
 from .scheduler import SkillScheduler
+from .service_worker import ServiceWorker
 from .updater.skill_updater import SkillUpdater, LOCAL_SKILLS_DIR
 
 DASHBOARD_PORT = 7777
@@ -55,6 +56,7 @@ DASHBOARD_PORT = 7777
 _chrome = None
 _scheduler = None
 _updater = None
+_service_worker = None
 
 
 def _create_tray_icon():
@@ -214,6 +216,8 @@ def _uninstall():
         keep_data = True  # Default to keeping data if dialog fails
 
     # Stop services
+    if _service_worker:
+        _service_worker.stop()
     if _scheduler:
         _scheduler.stop()
     if _updater:
@@ -277,6 +281,8 @@ def _uninstall():
 def _shutdown():
     """Clean shutdown of all components."""
     logger.info("Shutting down...")
+    if _service_worker:
+        _service_worker.stop()
     if _scheduler:
         _scheduler.stop()
     if _updater:
@@ -308,7 +314,7 @@ def _show_splash():
 
 
 def main():
-    global _chrome, _scheduler, _updater
+    global _chrome, _scheduler, _updater, _service_worker
 
     # Show splash immediately so user knows something is happening
     threading.Thread(target=_show_splash, daemon=True).start()
@@ -371,6 +377,14 @@ def main():
 
     # 5. Start Scheduler (after skills loaded + updated)
     _scheduler.start()
+
+    # 5b. Start Service Worker (processes inter-skill service requests)
+    _service_worker = ServiceWorker(
+        skills=_scheduler._skills,
+        core_db_path=_scheduler.core_db_path,
+        chrome_manager=_chrome,
+    )
+    _service_worker.start()
 
     # 6. Start Dashboard
     from .dashboard.app import app, set_app_deps
