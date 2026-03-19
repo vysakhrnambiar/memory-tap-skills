@@ -397,12 +397,18 @@
 
         function renderList(data) {
             if (!data.length) return '<div class="empty">No data</div>';
-            return data.map(item => `
-                <div class="timeline-item">
-                    <div class="item-title">${esc(item.title || '')}</div>
-                    <div class="item-meta">${esc(item.subtitle || item.channel || '')}</div>
-                </div>
-            `).join('');
+            return data.map((item, idx) => {
+                // Find best title: first string field with content
+                const title = item.title || item.channel || item.name || Object.values(item).find(v => typeof v === 'string' && v.length > 0) || '?';
+                // Find best meta: any numeric field (count, watch_count, etc.)
+                const numFields = Object.entries(item).filter(([k,v]) => typeof v === 'number' && k !== 'id');
+                const meta = numFields.length > 0 ? numFields.map(([k,v]) => v + ' ' + k.replace(/_/g,' ')).join(' · ') : (item.subtitle || '');
+                return `
+                <div class="timeline-item" style="display:flex;justify-content:space-between;align-items:center">
+                    <div class="item-title">${idx+1}. ${esc(title)}</div>
+                    <div class="item-meta" style="white-space:nowrap">${esc(meta)}</div>
+                </div>`;
+            }).join('');
         }
 
         function renderProgressList(data) {

@@ -25,9 +25,9 @@ Verified selectors via CDP probe (2026-03-18):
 - Video page: h1 yt-formatted-string, #expand + description, comments
 - &t= parameter verified working on CDP Chrome (video loads paused)
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 """
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 import json
 import logging
@@ -513,12 +513,13 @@ class YouTubeHistorySkill(BaseSkill):
 
         result.items_found = len(videos) + shorts_new_count
 
-        # Phase 2: Visit each video page for details (new tab per video)
+        # Phase 2: Visit video pages for details (new tab per video)
+        # Process BOTH new videos from Phase 1A AND existing stubs from DB
         new_count = 0
         updated_count = 0
 
+        # First: process new videos from Phase 1A
         for video in videos:
-            # Only time limit stops Phase 2 — NOT date stop
             if limits.time_exceeded:
                 logger.info("Stopping video visits: time limit reached")
                 break
@@ -529,7 +530,6 @@ class YouTubeHistorySkill(BaseSkill):
             ).fetchone()
 
             if existing and existing["title"] and existing["description"]:
-                # Already have full details — just update watch_percent
                 if video.get("watch_percent") is not None:
                     conn.execute(
                         "UPDATE videos SET watch_percent = ?, resume_time_seconds = ?, "
@@ -541,8 +541,6 @@ class YouTubeHistorySkill(BaseSkill):
                     updated_count += 1
                 continue
 
-            # New video — visit page for full details in a new tab
-            video_tab = None
             try:
                 details = self._visit_video_page(_cdp, video)
                 self._save_video(conn, video, details)
@@ -552,8 +550,38 @@ class YouTubeHistorySkill(BaseSkill):
                             new_count, details.get("title", "")[:60])
             except Exception as e:
                 logger.warning("Failed video %s: %s", video["video_id"], e)
-
             wait_human(2, 4)
+
+        # Second: fill in stubs from DB that don't have full details yet
+        if not limits.time_exceeded:
+            stubs = conn.execute(
+                "SELECT video_id, url, watch_percent, resume_time_seconds, "
+                "duration_seconds FROM videos "
+                "WHERE (title = '' OR title IS NULL OR description = '' OR description IS NULL) "
+                "ORDER BY rowid LIMIT 200"
+            ).fetchall()
+            if stubs:
+                logger.info("Phase 2 backfill: %d stubs need details", len(stubs))
+            for stub in stubs:
+                if limits.time_exceeded:
+                    logger.info("Stopping backfill: time limit reached")
+                    break
+                video = {
+                    "video_id": stub["video_id"],
+                    "url": stub["url"],
+                    "watch_percent": stub["watch_percent"] or 0,
+                    "resume_time_seconds": stub["resume_time_seconds"] or 0,
+                    "duration_seconds": stub["duration_seconds"] or 0,
+                }
+                try:
+                    details = self._visit_video_page(_cdp, video)
+                    self._save_video(conn, video, details)
+                    new_count += 1
+                    logger.info("Backfill video %d: %s",
+                                new_count, details.get("title", "")[:60])
+                except Exception as e:
+                    logger.warning("Failed backfill %s: %s", video["video_id"], e)
+                wait_human(2, 4)
 
         new_count += shorts_new_count
 
