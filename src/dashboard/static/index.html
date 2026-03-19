@@ -1016,12 +1016,23 @@
                 for (const s of skills) {
                     const color = s.login_status === 'logged_in' ? 'green' : s.login_status === 'not_logged_in' ? 'red' : 'yellow';
                     const lastSync = s.last_sync_at ? timeAgo(s.last_sync_at) : 'Never';
+                    const schedHours = s.schedule_hours || 3;
                     html += `<div class="skill-card">
                         <div class="skill-info">
                             <h4 onclick="navigate('skill','${esc(s.name)}')" style="cursor:pointer;color:#7c3aed">${esc(s.name)}</h4>
                             <div class="skill-meta"><span class="status-dot ${color}"></span>${s.login_status} &middot; v${esc(s.version)} &middot; Last: ${lastSync}${s.last_error ? ' &middot; <span style="color:#ef4444">'+esc(s.last_error).substring(0,60)+'</span>' : ''}</div>
                         </div>
-                        <div style="display:flex;gap:6px">
+                        <div style="display:flex;gap:6px;align-items:center">
+                            <select onchange="setSchedule('${esc(s.name)}',this.value)" style="background:#222;color:#ccc;border:1px solid #444;border-radius:4px;padding:4px;font-size:12px">
+                                <option value="0.083" ${schedHours<0.1?'selected':''}>5 min</option>
+                                <option value="0.167" ${schedHours>=0.1&&schedHours<0.2?'selected':''}>10 min</option>
+                                <option value="0.5" ${schedHours>=0.4&&schedHours<0.6?'selected':''}>30 min</option>
+                                <option value="1" ${schedHours>=0.9&&schedHours<1.5?'selected':''}>1 hr</option>
+                                <option value="3" ${schedHours>=2&&schedHours<4?'selected':''}>3 hr</option>
+                                <option value="6" ${schedHours>=5&&schedHours<8?'selected':''}>6 hr</option>
+                                <option value="12" ${schedHours>=10&&schedHours<15?'selected':''}>12 hr</option>
+                                <option value="24" ${schedHours>=20?'selected':''}>24 hr</option>
+                            </select>
                             <button class="btn" onclick="toggleSkill('${esc(s.name)}')">${s.enabled ? 'Disable' : 'Enable'}</button>
                             <button class="btn primary" onclick="runSkill('${esc(s.name)}')">Run</button>
                         </div>
@@ -1042,6 +1053,14 @@
             </div>`;
 
             el.innerHTML = html;
+        }
+
+        async function setSchedule(name, hours) {
+            await fetch(`/api/skills/${name}/schedule`, {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({schedule_hours: parseFloat(hours)})
+            });
         }
 
         async function saveSettings() {

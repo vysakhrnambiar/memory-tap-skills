@@ -135,6 +135,25 @@ async def api_toggle_skill(name: str):
     return {"name": name, "enabled": row["enabled"] if row else 0}
 
 
+@app.post("/api/skills/{name}/schedule")
+async def api_set_schedule(name: str, request: Request):
+    """Update skill run frequency."""
+    body = await request.json()
+    hours = body.get("schedule_hours")
+    if hours is None:
+        return {"error": "schedule_hours required"}
+    hours = float(hours)
+    conn = get_core_connection(_db_path)
+    conn.execute(
+        "UPDATE skill_registry SET schedule_hours = ? WHERE name = ?",
+        (hours, name),
+    )
+    conn.commit()
+    conn.close()
+    logger.info("API: schedule(%s) set to %.2f hours", name, hours)
+    return {"name": name, "schedule_hours": hours}
+
+
 _running_skills: dict = {}  # name -> threading.Thread
 
 @app.post("/api/skills/{name}/run")
