@@ -15,23 +15,23 @@
     },
     {
       "name": "chatgpt_history",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "file": "chatgpt_history.py",
       "target_site": "chatgpt.com",
       "auth_provider": "openai",
       "description": "Collects ChatGPT conversations - messages, sources, code blocks",
       "schedule_hours": 3,
-      "checksum": "sha256:4e9e66702cf8056b37b175ac4aaf0a3ac78e9a9619b732785555163f73317b68"
+      "checksum": "sha256:087f6a774b618c6597994bb914f4ea201449f2877b9f73842119e93a1b45f4bf"
     },
     {
       "name": "gemini_history",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "file": "gemini_history.py",
       "target_site": "gemini.google.com",
       "auth_provider": "google",
       "description": "Collects Gemini conversations - messages, thinking blocks, sources",
       "schedule_hours": 3,
-      "checksum": "sha256:bf13c9763db50f4d096b0fd63f6ef938dbc97212cb05d311c7c33a81fd1d7374"
+      "checksum": "sha256:1286b31817389b47ab83d4c113ce12182bdc724b5e8dad38c89e03aef331cdf8"
     }
   ]
 }

@@ -18,9 +18,9 @@ Verified selectors via CDP probe (2026-03-15):
 Scope: Regular chats (/c/) only. Projects, GPTs, Group chats excluded.
 Text only — no images, artifacts, files.
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 """
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 import json
 import logging
@@ -280,15 +280,15 @@ class ChatGPTHistorySkill(BaseSkill):
 
         Returns list of {external_id, title, position, is_pinned, url}.
         """
-        # Scroll sidebar to load all conversations — wait for new items to appear
+        # Scroll sidebar to load conversations — backoff when no new items
         prev_count = 0
-        no_change_count = 0
-        for scroll_num in range(30):  # max 30 scrolls
+        consecutive_misses = 0
+        for scroll_num in range(50):  # max 50 scrolls
             tab.js("""
                 var nav = document.querySelector('nav');
                 if (nav) nav.scrollTop += 400;
             """)
-            wait_human(1.5, 2.5)
+            wait_human(2, 3)
 
             # Count current conversations
             cur_count = tab.js("""
@@ -299,13 +299,42 @@ class ChatGPTHistorySkill(BaseSkill):
             cur_count = int(cur_count)
 
             if cur_count > prev_count:
-                no_change_count = 0
+                consecutive_misses = 0
                 prev_count = cur_count
                 logger.info("Sidebar scroll %d: %d conversations loaded", scroll_num + 1, cur_count)
             else:
-                no_change_count += 1
-                if no_change_count >= 3:
-                    logger.info("Sidebar scroll done: %d conversations (no new after %d scrolls)", cur_count, no_change_count)
+                # Backoff: wait 3s more, check again
+                wait_human(3, 3.5)
+                recheck = tab.js("""
+                    return (function() {
+                        return document.querySelectorAll('nav a[href*="/c/"]').length;
+                    })();
+                """) or 0
+                recheck = int(recheck)
+                if recheck > prev_count:
+                    prev_count = recheck
+                    consecutive_misses = 0
+                    logger.info("Sidebar scroll %d: %d conversations (after 3s backoff)", scroll_num + 1, recheck)
+                    continue
+
+                # Wait 5s more
+                wait_human(5, 5.5)
+                recheck2 = tab.js("""
+                    return (function() {
+                        return document.querySelectorAll('nav a[href*="/c/"]').length;
+                    })();
+                """) or 0
+                recheck2 = int(recheck2)
+                if recheck2 > prev_count:
+                    prev_count = recheck2
+                    consecutive_misses = 0
+                    logger.info("Sidebar scroll %d: %d conversations (after 5s backoff)", scroll_num + 1, recheck2)
+                    continue
+
+                consecutive_misses += 1
+                logger.info("Sidebar scroll miss %d/3 (%d conversations, ~10s wait)", consecutive_misses, cur_count)
+                if consecutive_misses >= 3:
+                    logger.info("Sidebar scroll done: %d conversations (3 consecutive misses)", cur_count)
                     break
 
         # Extract conversation links

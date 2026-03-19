@@ -17,9 +17,9 @@ Verified selectors via CDP probe (2026-03-15):
 - Thinking blocks: model-thoughts element
 - Login: SID cookie on .google.com
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 """
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 import json
 import logging
@@ -284,16 +284,16 @@ class GeminiHistorySkill(BaseSkill):
                 pass
 
     def _scan_sidebar(self, tab: CDPTab) -> list[dict]:
-        """Scroll sidebar and collect conversation entries."""
+        """Scroll sidebar and collect conversation entries — with backoff."""
         prev_count = 0
-        no_change_count = 0
-        for scroll_num in range(30):
+        consecutive_misses = 0
+        for scroll_num in range(50):
             tab.js("""
                 var sidebar = document.querySelector('nav, [role="navigation"], .sidebar');
                 if (sidebar) sidebar.scrollTop += 400;
                 else window.scrollTo(0, document.body.scrollHeight);
             """)
-            wait_human(1.5, 2.5)
+            wait_human(2, 3)
 
             cur_count = tab.js("""
                 return (function() {
@@ -303,13 +303,42 @@ class GeminiHistorySkill(BaseSkill):
             cur_count = int(cur_count)
 
             if cur_count > prev_count:
-                no_change_count = 0
+                consecutive_misses = 0
                 prev_count = cur_count
                 logger.info("Sidebar scroll %d: %d conversations loaded", scroll_num + 1, cur_count)
             else:
-                no_change_count += 1
-                if no_change_count >= 3:
-                    logger.info("Sidebar scroll done: %d conversations (no new after %d scrolls)", cur_count, no_change_count)
+                # Backoff: 3s more
+                wait_human(3, 3.5)
+                recheck = tab.js("""
+                    return (function() {
+                        return document.querySelectorAll('a[href*="/app/"]').length;
+                    })();
+                """) or 0
+                recheck = int(recheck)
+                if recheck > prev_count:
+                    prev_count = recheck
+                    consecutive_misses = 0
+                    logger.info("Sidebar scroll %d: %d conversations (after 3s backoff)", scroll_num + 1, recheck)
+                    continue
+
+                # 5s more
+                wait_human(5, 5.5)
+                recheck2 = tab.js("""
+                    return (function() {
+                        return document.querySelectorAll('a[href*="/app/"]').length;
+                    })();
+                """) or 0
+                recheck2 = int(recheck2)
+                if recheck2 > prev_count:
+                    prev_count = recheck2
+                    consecutive_misses = 0
+                    logger.info("Sidebar scroll %d: %d conversations (after 5s backoff)", scroll_num + 1, recheck2)
+                    continue
+
+                consecutive_misses += 1
+                logger.info("Sidebar scroll miss %d/3 (%d conversations, ~10s wait)", consecutive_misses, cur_count)
+                if consecutive_misses >= 3:
+                    logger.info("Sidebar scroll done: %d conversations (3 consecutive misses)", cur_count)
                     break
 
         entries_raw = tab.js("""
