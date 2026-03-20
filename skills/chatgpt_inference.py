@@ -19,9 +19,9 @@ Verified selectors via CDP probe (2026-03-19):
 This skill has NO collect() — it is a service provider only.
 Other skills invoke it via request_service("chatgpt_inference.execute_prompt", {...}).
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 """
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import json
 import logging
@@ -79,6 +79,10 @@ class ChatGPTInferenceSkill(BaseSkill):
 
     def create_schema(self, conn):
         """No data tables needed — inference skill doesn't store data."""
+        pass
+
+    def migrate_schema(self, conn, old_version: str, new_version: str) -> None:
+        """No schema to migrate — service-only skill."""
         pass
 
     def collect(self, tab, tracker, limits):

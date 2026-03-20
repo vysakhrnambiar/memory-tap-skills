@@ -17,9 +17,9 @@ Verified selectors via CDP probe (2026-03-15):
 - Thinking blocks: model-thoughts element
 - Login: SID cookie on .google.com
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 """
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 import json
 import logging
@@ -128,6 +128,14 @@ class GeminiHistorySkill(BaseSkill):
             CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(last_updated);
         """)
         conn.commit()
+
+    def migrate_schema(self, conn, old_version: str, new_version: str) -> None:
+        """Handle schema changes between versions.
+
+        Add ALTER TABLE / CREATE INDEX statements here when the schema changes.
+        For code-only version bumps (no schema change), this is a no-op.
+        """
+        pass
 
     # ── Login detection ───────────────────────────────────────────
 

@@ -26,9 +26,9 @@ Verified selectors via CDP probe (2026-03-18):
 - Video page: h1 yt-formatted-string, #expand + description, comments
 - &t= parameter verified working on CDP Chrome (video loads paused)
 
-__version__ = "0.4.5"
+__version__ = "0.4.6"
 """
-__version__ = "0.4.5"
+__version__ = "0.4.6"
 
 import json
 import logging
@@ -254,6 +254,19 @@ class YouTubeHistorySkill(BaseSkill):
             (today,),
         )
         conn.commit()
+
+    def migrate_schema(self, conn, old_version: str, new_version: str) -> None:
+        """Handle schema changes between versions.
+
+        Add ALTER TABLE / CREATE INDEX statements here when the schema changes.
+        For code-only version bumps (no schema change), this is a no-op.
+
+        Example for future use:
+            if old_version < "0.5.0":
+                conn.execute("ALTER TABLE videos ADD COLUMN category TEXT DEFAULT ''")
+                conn.commit()
+        """
+        pass
 
     # ── Login detection ───────────────────────────────────────────
 
