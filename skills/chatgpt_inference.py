@@ -2,26 +2,37 @@
 ChatGPT Inference Skill — service provider for running prompts via ChatGPT.
 
 CHANGELOG:
+  v0.2.0 (2026-03-20):
+    - Added execute_prompt_with_image service
+    - Image upload via #upload-photos file input + DOM.setFileInputFiles
+    - Supports multiple images (list of absolute paths)
+    - Prompt typed via Input.insertText (works with contenteditable)
+    - Probed and verified on MKBHD channel analysis (3400 char detailed response)
   v0.1.0 (2026-03-19):
     - Initial version: execute_prompt service
     - Opens new chat, types prompt, waits for reply (copy button detection)
     - 10 minute timeout, always returns data or error
     - Tab managed per request (open/close in finally)
 
-Verified selectors via CDP probe (2026-03-19):
+Verified selectors via CDP probe (2026-03-19, 2026-03-20):
 - Input: #prompt-textarea (div contenteditable="true")
 - Send button: button[data-testid="send-button"] (appears after text typed)
 - Reply completion: button[data-testid="copy-turn-action-button"] or
                     button[data-testid="good-response-turn-action-button"]
 - Reply text: [data-message-author-role="assistant"] div.markdown
 - Login: __Secure-next-auth.session-token cookie on .chatgpt.com
+- Image upload: #upload-photos input[type="file"] accepts image/*
+- Image upload method: DOM.setFileInputFiles (no click needed)
+- Prompt with images: Input.insertText after focus on input element
 
 This skill has NO collect() — it is a service provider only.
-Other skills invoke it via request_service("chatgpt_inference.execute_prompt", {...}).
+Other skills invoke it via:
+  request_service("chatgpt_inference.execute_prompt", {"prompt": "..."})
+  request_service("chatgpt_inference.execute_prompt_with_image", {"prompt": "...", "image_paths": [...]})
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 """
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 import json
 import logging
@@ -73,6 +84,13 @@ class ChatGPTInferenceSkill(BaseSkill):
                 output_schema={"reply": "str"},
                 max_duration_seconds=REPLY_TIMEOUT,
             ),
+            ServiceDefinition(
+                name="execute_prompt_with_image",
+                description="Send a prompt with one or more images to ChatGPT, return the full reply",
+                input_schema={"prompt": "str", "image_paths": "list[str]"},
+                output_schema={"reply": "str"},
+                max_duration_seconds=REPLY_TIMEOUT,
+            ),
         ]
 
     # ── No collect — this is a service-only skill ────────────
@@ -109,6 +127,8 @@ class ChatGPTInferenceSkill(BaseSkill):
         """Handle a service request. Always returns dict with data or error."""
         if service_name == "execute_prompt":
             return self._execute_prompt(payload, cdp)
+        if service_name == "execute_prompt_with_image":
+            return self._execute_prompt_with_image(payload, cdp)
         return {"error": f"Unknown service: {service_name}"}
 
     def _execute_prompt(self, payload: dict, cdp: CDPClient) -> dict:
@@ -236,6 +256,210 @@ class ChatGPTInferenceSkill(BaseSkill):
 
         finally:
             # Step 10: Always close tab
+            if tab:
+                try:
+                    cdp.close_tab(tab)
+                except Exception:
+                    pass
+
+    def _execute_prompt_with_image(self, payload: dict, cdp: CDPClient) -> dict:
+        """Send prompt with images to ChatGPT, wait for reply, return it.
+
+        payload:
+            prompt: str — the text prompt
+            image_paths: list[str] — absolute paths to image files (png/jpg)
+        """
+        prompt = payload.get("prompt", "")
+        image_paths = payload.get("image_paths", [])
+
+        if not prompt:
+            return {"error": "Empty prompt"}
+        if not image_paths:
+            return {"error": "No image paths provided"}
+
+        # Validate all image files exist
+        import os
+        for p in image_paths:
+            if not os.path.isfile(p):
+                return {"error": f"Image file not found: {p}"}
+
+        tab = None
+        try:
+            # Step 1: Open new tab to ChatGPT
+            logger.info("Opening ChatGPT for image prompt (%d chars, %d images)",
+                        len(prompt), len(image_paths))
+            tab = cdp.new_tab("https://chatgpt.com")
+
+            # Step 2: Wait for page to fully load (generous wait)
+            input_found = False
+            for _ in range(20):  # 40 seconds max
+                check = tab.js('''
+                    return document.querySelector('#prompt-textarea') ? 'found' : '';
+                ''')
+                if check == 'found':
+                    input_found = True
+                    break
+                time.sleep(2)
+
+            if not input_found:
+                has_login = tab.js('''
+                    return document.body.innerText.includes('Log in') ? 'yes' : 'no';
+                ''')
+                if has_login == 'yes':
+                    return {"error": "Not logged in to ChatGPT"}
+                return {"error": "ChatGPT page failed to load — input field not found"}
+
+            # Extra settle time after page load
+            wait_human(3, 5)
+
+            # Step 3: Verify it's a new chat
+            existing = tab.js('''
+                return document.querySelectorAll('[data-message-author-role]').length;
+            ''') or 0
+            if int(existing) > 0:
+                tab.navigate("https://chatgpt.com")
+                wait_human(5, 8)
+
+            # Step 4: Upload images via #upload-photos file input
+            logger.info("Uploading %d image(s)", len(image_paths))
+            tab._send("DOM.enable")
+            doc = tab._send("DOM.getDocument")
+            search = tab._send("DOM.querySelector", {
+                "nodeId": doc["root"]["nodeId"],
+                "selector": "#upload-photos"
+            })
+            file_node_id = search.get("nodeId", 0)
+            if not file_node_id:
+                return {"error": "Image upload input (#upload-photos) not found"}
+
+            # Convert to absolute paths (DOM.setFileInputFiles requires absolute)
+            abs_paths = [os.path.abspath(p) for p in image_paths]
+            tab._send("DOM.setFileInputFiles", {
+                "nodeId": file_node_id,
+                "files": abs_paths
+            })
+            logger.info("Images set on file input")
+
+            # Wait for images to upload and preview to appear
+            wait_human(5, 8)
+
+            # Step 5: Type the prompt using Input.insertText
+            logger.info("Typing prompt")
+            tab.js('''
+                var el = document.querySelector('#prompt-textarea, div[contenteditable="true"]');
+                if (el) el.focus();
+            ''')
+            wait_human(1, 2)
+            tab._send("Input.insertText", {"text": prompt})
+            wait_human(2, 3)
+
+            # Step 6: Wait for send button and click
+            send_found = False
+            for _ in range(10):  # 20 seconds max
+                check = tab.js('''
+                    var btn = document.querySelector('button[data-testid="send-button"]');
+                    if (btn) return 'found';
+                    // Fallback: any submit-like button in form
+                    var form = document.querySelector('form');
+                    if (form) {
+                        var btns = form.querySelectorAll('button[type="button"]');
+                        for (var b of btns) {
+                            var label = b.getAttribute('aria-label') || '';
+                            if (label.includes('Send')) return 'found';
+                        }
+                    }
+                    return '';
+                ''')
+                if check == 'found':
+                    send_found = True
+                    break
+                time.sleep(2)
+
+            if not send_found:
+                return {"error": "Send button not available after typing prompt with image"}
+
+            # Count existing messages BEFORE sending (to detect new ones)
+            msg_count_before = int(tab.js('''
+                return document.querySelectorAll('[data-message-author-role="assistant"]').length;
+            ''') or 0)
+            logger.info("Messages before send: %d", msg_count_before)
+
+            logger.info("Clicking send")
+            tab.js('''
+                var btn = document.querySelector('button[data-testid="send-button"]');
+                if (btn) { btn.click(); return; }
+                var form = document.querySelector('form');
+                if (form) {
+                    var btns = form.querySelectorAll('button');
+                    for (var b of btns) {
+                        var label = b.getAttribute('aria-label') || '';
+                        if (label.includes('Send')) { b.click(); return; }
+                    }
+                }
+            ''')
+
+            # Step 7: Poll for NEW response completion
+            # Wait for: message count to increase AND stop button to disappear
+            logger.info("Waiting for reply (max %ds, image analysis may take longer)...",
+                        REPLY_TIMEOUT)
+            start = time.time()
+            reply_complete = False
+
+            while time.time() - start < REPLY_TIMEOUT:
+                time.sleep(POLL_INTERVAL)
+
+                status = tab.js('''
+                    return (function() {
+                        var msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+                        var stop = document.querySelector('button[aria-label="Stop"], button[data-testid="stop-button"]');
+                        return JSON.stringify({count: msgs.length, streaming: !!stop});
+                    })();
+                ''') or '{"count":0,"streaming":false}'
+
+                import json as _json
+                try:
+                    st = _json.loads(status)
+                except (ValueError, TypeError):
+                    st = {"count": 0, "streaming": False}
+
+                msg_count = st.get("count", 0)
+                is_streaming = st.get("streaming", False)
+
+                # New message appeared and streaming finished
+                if msg_count > msg_count_before and not is_streaming:
+                    reply_complete = True
+                    elapsed = time.time() - start
+                    logger.info("Reply received in %.1fs", elapsed)
+                    break
+
+            if not reply_complete:
+                return {"error": f"Reply timeout after {REPLY_TIMEOUT} seconds"}
+
+            # Extra wait after completion to ensure full content rendered
+            wait_human(3, 5)
+
+            # Step 8: Extract reply text (get the LAST assistant message)
+            reply = tab.js('''
+                return (function() {
+                    var msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+                    if (msgs.length === 0) return '';
+                    var last = msgs[msgs.length - 1];
+                    var md = last.querySelector('.markdown');
+                    return md ? md.textContent.trim() : last.textContent.trim();
+                })();
+            ''') or ""
+
+            if not reply:
+                return {"error": "Empty reply from ChatGPT"}
+
+            logger.info("Image prompt reply: %d chars", len(reply))
+            return {"reply": reply}
+
+        except Exception as e:
+            logger.error("ChatGPT image inference failed: %s", e)
+            return {"error": str(e)}
+
+        finally:
             if tab:
                 try:
                     cdp.close_tab(tab)
