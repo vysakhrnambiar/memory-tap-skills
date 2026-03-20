@@ -30,9 +30,9 @@ Other skills invoke it via:
   request_service("chatgpt_inference.execute_prompt", {"prompt": "..."})
   request_service("chatgpt_inference.execute_prompt_with_image", {"prompt": "...", "image_paths": [...]})
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 """
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 import json
 import logging
@@ -312,13 +312,29 @@ class ChatGPTInferenceSkill(BaseSkill):
             # Extra settle time after page load
             wait_human(3, 5)
 
-            # Step 3: Verify it's a new chat
-            existing = tab.js('''
-                return document.querySelectorAll('[data-message-author-role]').length;
-            ''') or 0
-            if int(existing) > 0:
+            # Step 3: Ensure fresh chat — no existing messages
+            for _fresh in range(3):
+                existing = int(tab.js('''
+                    return document.querySelectorAll('[data-message-author-role]').length;
+                ''') or 0)
+                if existing == 0:
+                    break
+                logger.info("Existing messages found (%d) — navigating to fresh chat", existing)
                 tab.navigate("https://chatgpt.com")
                 wait_human(5, 8)
+                # Re-wait for input field
+                for _ in range(15):
+                    if tab.js("return document.querySelector('#prompt-textarea') ? 'found' : ''") == 'found':
+                        break
+                    time.sleep(2)
+                wait_human(3, 5)
+
+            # Final check — must be zero messages
+            final_count = int(tab.js('''
+                return document.querySelectorAll('[data-message-author-role]').length;
+            ''') or 0)
+            if final_count > 0:
+                return {"error": "Could not get a fresh ChatGPT chat after 3 attempts"}
 
             # Step 4: Upload images via #upload-photos file input
             logger.info("Uploading %d image(s)", len(image_paths))
@@ -378,12 +394,6 @@ class ChatGPTInferenceSkill(BaseSkill):
             if not send_found:
                 return {"error": "Send button not available after typing prompt with image"}
 
-            # Count existing messages BEFORE sending (to detect new ones)
-            msg_count_before = int(tab.js('''
-                return document.querySelectorAll('[data-message-author-role="assistant"]').length;
-            ''') or 0)
-            logger.info("Messages before send: %d", msg_count_before)
-
             logger.info("Clicking send")
             tab.js('''
                 var btn = document.querySelector('button[data-testid="send-button"]');
@@ -398,8 +408,8 @@ class ChatGPTInferenceSkill(BaseSkill):
                 }
             ''')
 
-            # Step 7: Poll for NEW response completion
-            # Wait for: message count to increase AND stop button to disappear
+            # Step 7: Poll for completion (fresh chat = simple detection)
+            # Copy/thumbs buttons appear only when response is fully done
             logger.info("Waiting for reply (max %ds, image analysis may take longer)...",
                         REPLY_TIMEOUT)
             start = time.time()
@@ -408,25 +418,16 @@ class ChatGPTInferenceSkill(BaseSkill):
             while time.time() - start < REPLY_TIMEOUT:
                 time.sleep(POLL_INTERVAL)
 
-                status = tab.js('''
+                done = tab.js('''
                     return (function() {
-                        var msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
-                        var stop = document.querySelector('button[aria-label="Stop"], button[data-testid="stop-button"]');
-                        return JSON.stringify({count: msgs.length, streaming: !!stop});
+                        var copy = document.querySelector('button[data-testid="copy-turn-action-button"]');
+                        var thumbUp = document.querySelector('button[data-testid="good-response-turn-action-button"]');
+                        var thumbDown = document.querySelector('button[data-testid="bad-response-turn-action-button"]');
+                        if (copy || thumbUp || thumbDown) return 'done';
+                        return '';
                     })();
-                ''') or '{"count":0,"streaming":false}'
-
-                import json as _json
-                try:
-                    st = _json.loads(status)
-                except (ValueError, TypeError):
-                    st = {"count": 0, "streaming": False}
-
-                msg_count = st.get("count", 0)
-                is_streaming = st.get("streaming", False)
-
-                # New message appeared and streaming finished
-                if msg_count > msg_count_before and not is_streaming:
+                ''')
+                if done == 'done':
                     reply_complete = True
                     elapsed = time.time() - start
                     logger.info("Reply received in %.1fs", elapsed)
