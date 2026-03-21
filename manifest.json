@@ -4,16 +4,6 @@
   "repo": "vysakhrnambiar/memory-tap-skills",
   "skills": [
     {
-      "name": "youtube_history",
-      "version": "0.4.6",
-      "file": "youtube_history.py",
-      "target_site": "youtube.com",
-      "auth_provider": "google",
-      "description": "Collects YouTube watch history - titles, descriptions, top comments, watch progress",
-      "schedule_hours": 3,
-      "checksum": "sha256:bb72a808ab82e474f93a7e69b11fd0d955644e9b5b8658db12f2ff0e8ea1ee34"
-    },
-    {
       "name": "chatgpt_history",
       "version": "0.3.5",
       "file": "chatgpt_history.py",
