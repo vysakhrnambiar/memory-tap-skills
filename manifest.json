@@ -36,8 +36,8 @@
     {
       "name": "chatgpt_inference",
       "file": "chatgpt_inference.py",
-      "version": "0.2.1",
-      "checksum": "sha256:5bcd92208807b222b5d9257d1348b00dd91598c20368d0eea6d79ebfdacbe7ff"
+      "version": "0.3.0",
+      "checksum": "sha256:e1f2111f74139445dcb0909c42a035f94133bc62bb299eaaf472eddfd31a5e10"
     }
   ]
 }

@@ -2,40 +2,39 @@
 ChatGPT Inference Skill — service provider for running prompts via ChatGPT.
 
 CHANGELOG:
+  v0.3.0 (2026-03-21):
+    - Unified execution flow: single _execute() handles text, images, web search
+    - All methods use: fresh chat enforcement, Input.insertText, mouse click send
+    - Web search toggle: + → hover More → click Web search (CDP mouse events)
+    - Falls back to non-web-search if toggle fails, flags in response
+    - Exponential backoff response capture (3-phase: start → stop → stability)
+    - Response includes web_search: true/false
   v0.2.0 (2026-03-20):
     - Added execute_prompt_with_image service
     - Image upload via #upload-photos file input + DOM.setFileInputFiles
-    - Supports multiple images (list of absolute paths)
-    - Prompt typed via Input.insertText (works with contenteditable)
-    - Probed and verified on MKBHD channel analysis (3400 char detailed response)
   v0.1.0 (2026-03-19):
     - Initial version: execute_prompt service
-    - Opens new chat, types prompt, waits for reply (copy button detection)
-    - 10 minute timeout, always returns data or error
-    - Tab managed per request (open/close in finally)
 
-Verified selectors via CDP probe (2026-03-19, 2026-03-20):
+Verified selectors via CDP probe (2026-03-19 → 2026-03-21):
 - Input: #prompt-textarea (div contenteditable="true")
-- Send button: button[data-testid="send-button"] (appears after text typed)
-- Reply completion: button[data-testid="copy-turn-action-button"] or
-                    button[data-testid="good-response-turn-action-button"]
+- Send button: button[data-testid="send-button"] — use MOUSE CLICK not JS click
 - Reply text: [data-message-author-role="assistant"] div.markdown
 - Login: __Secure-next-auth.session-token cookie on .chatgpt.com
-- Image upload: #upload-photos input[type="file"] accepts image/*
-- Image upload method: DOM.setFileInputFiles (no click needed)
-- Prompt with images: Input.insertText after focus on input element
+- Image upload: #upload-photos input[type="file"], DOM.setFileInputFiles
+- Prompt typing: Input.insertText after focus (works with contenteditable)
+- Web search: + button (composer-plus-btn) → hover More (haspopup=menu) → click Web search (menuitemradio)
 
-This skill has NO collect() — it is a service provider only.
-Other skills invoke it via:
-  request_service("chatgpt_inference.execute_prompt", {"prompt": "..."})
-  request_service("chatgpt_inference.execute_prompt_with_image", {"prompt": "...", "image_paths": [...]})
+Services:
+  execute_prompt(prompt, web_search=False)
+  execute_prompt_with_image(prompt, image_paths, web_search=False)
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 """
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 import json
 import logging
+import os
 import time
 
 from src.cdp_client import CDPClient, CDPTab
@@ -50,7 +49,6 @@ logger = logging.getLogger("memory_tap.skill.chatgpt_inf")
 
 # Max wait for ChatGPT reply (seconds)
 REPLY_TIMEOUT = 600  # 10 minutes
-POLL_INTERVAL = 2    # check every 2 seconds
 
 
 class ChatGPTInferenceSkill(BaseSkill):
@@ -79,16 +77,16 @@ class ChatGPTInferenceSkill(BaseSkill):
         return [
             ServiceDefinition(
                 name="execute_prompt",
-                description="Send a raw prompt to ChatGPT, return the full reply",
-                input_schema={"prompt": "str"},
-                output_schema={"reply": "str"},
+                description="Send a prompt to ChatGPT, optionally with web search",
+                input_schema={"prompt": "str", "web_search": "bool (optional)"},
+                output_schema={"reply": "str", "web_search": "bool"},
                 max_duration_seconds=REPLY_TIMEOUT,
             ),
             ServiceDefinition(
                 name="execute_prompt_with_image",
-                description="Send a prompt with one or more images to ChatGPT, return the full reply",
-                input_schema={"prompt": "str", "image_paths": "list[str]"},
-                output_schema={"reply": "str"},
+                description="Send a prompt with images to ChatGPT, optionally with web search",
+                input_schema={"prompt": "str", "image_paths": "list[str]", "web_search": "bool (optional)"},
+                output_schema={"reply": "str", "web_search": "bool"},
                 max_duration_seconds=REPLY_TIMEOUT,
             ),
         ]
@@ -121,344 +119,432 @@ class ChatGPTInferenceSkill(BaseSkill):
         logger.info("ChatGPT Inference: not logged in")
         return False
 
+    # ── CDP helpers ─────────────────────────────────────
+
+    @staticmethod
+    def _mouse_click(tab, x, y):
+        """Send a proper mouse click at coordinates."""
+        tab._send("Input.dispatchMouseEvent", {
+            "type": "mousePressed", "x": x, "y": y,
+            "button": "left", "clickCount": 1
+        })
+        time.sleep(0.1)
+        tab._send("Input.dispatchMouseEvent", {
+            "type": "mouseReleased", "x": x, "y": y,
+            "button": "left", "clickCount": 1
+        })
+
+    @staticmethod
+    def _mouse_move(tab, x, y):
+        """Move mouse to coordinates (for hover effects)."""
+        tab._send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved", "x": x, "y": y
+        })
+
+    @staticmethod
+    def _find_element_pos(tab, js_code, max_attempts=5):
+        """Find element position via JS, retry if not found."""
+        for _ in range(max_attempts):
+            pos = tab.js(js_code)
+            if pos and pos != 'null':
+                return json.loads(pos)
+            time.sleep(2)
+        return None
+
+    # ── Shared flow components ─────────────────────────────
+
+    def _open_fresh_chat(self, tab):
+        """Wait for ChatGPT to load and ensure a fresh chat with zero messages.
+
+        Raises RuntimeError if page doesn't load or can't get fresh chat.
+        """
+        # Wait for input field (up to 40s)
+        input_found = False
+        for _ in range(20):
+            if tab.js("return document.querySelector('#prompt-textarea') ? 'f' : ''") == 'f':
+                input_found = True
+                break
+            time.sleep(2)
+
+        if not input_found:
+            has_login = tab.js("return document.body.innerText.includes('Log in') ? 'yes' : 'no'")
+            if has_login == 'yes':
+                raise RuntimeError("Not logged in to ChatGPT")
+            raise RuntimeError("ChatGPT page failed to load — input field not found")
+
+        wait_human(3, 5)
+
+        # Ensure zero messages (retry up to 3 times)
+        for _fresh in range(3):
+            existing = int(tab.js(
+                "return document.querySelectorAll('[data-message-author-role]').length;"
+            ) or 0)
+            if existing == 0:
+                return
+            logger.info("Existing messages found (%d) — navigating to fresh chat", existing)
+            tab.navigate("https://chatgpt.com")
+            wait_human(5, 8)
+            for _ in range(15):
+                if tab.js("return document.querySelector('#prompt-textarea') ? 'f' : ''") == 'f':
+                    break
+                time.sleep(2)
+            wait_human(3, 5)
+
+        final = int(tab.js(
+            "return document.querySelectorAll('[data-message-author-role]').length;"
+        ) or 0)
+        if final > 0:
+            raise RuntimeError("Could not get a fresh ChatGPT chat after 3 attempts")
+
+    def _upload_images(self, tab, image_paths):
+        """Upload images via #upload-photos file input.
+
+        Raises RuntimeError if upload element not found.
+        """
+        logger.info("Uploading %d image(s)", len(image_paths))
+        tab._send("DOM.enable")
+        doc = tab._send("DOM.getDocument")
+        search = tab._send("DOM.querySelector", {
+            "nodeId": doc["root"]["nodeId"],
+            "selector": "#upload-photos"
+        })
+        file_node_id = search.get("nodeId", 0)
+        if not file_node_id:
+            raise RuntimeError("Image upload input (#upload-photos) not found")
+
+        abs_paths = [os.path.abspath(p) for p in image_paths]
+        tab._send("DOM.setFileInputFiles", {
+            "nodeId": file_node_id,
+            "files": abs_paths
+        })
+        logger.info("Images set on file input")
+        wait_human(5, 8)
+
+    def _enable_web_search(self, tab) -> bool:
+        """Enable web search via + menu → hover More → click Web search.
+
+        Uses CDP mouse events (JS click doesn't work for these menus).
+        Returns True if enabled, False if failed (caller should fall back).
+        """
+        try:
+            # Click + button
+            p = self._find_element_pos(tab, """
+                var btn = document.querySelector('button[data-testid="composer-plus-btn"]');
+                if (!btn) return null;
+                var r = btn.getBoundingClientRect();
+                return JSON.stringify({x: r.x+r.width/2, y: r.y+r.height/2});
+            """, max_attempts=3)
+            if not p:
+                logger.warning("Web search: + button not found")
+                return False
+            self._mouse_click(tab, p['x'], p['y'])
+            time.sleep(3)
+
+            # Hover on More (haspopup=menu — opens on hover, not click)
+            p = self._find_element_pos(tab, """
+                var items = document.querySelectorAll('[role="menuitem"]');
+                for (var i of items) {
+                    if (i.textContent.trim().startsWith('More')) {
+                        var r = i.getBoundingClientRect();
+                        return JSON.stringify({x: r.x+r.width/2, y: r.y+r.height/2});
+                    }
+                }
+                return null;
+            """, max_attempts=3)
+            if not p:
+                logger.warning("Web search: More menu item not found")
+                tab.js("document.body.click()")  # dismiss menu
+                return False
+            self._mouse_move(tab, p['x'], p['y'])
+            time.sleep(3)
+
+            # Click Web search
+            p = self._find_element_pos(tab, """
+                var items = document.querySelectorAll('[role="menuitemradio"]');
+                for (var i of items) {
+                    if (i.textContent.trim() === 'Web search') {
+                        var r = i.getBoundingClientRect();
+                        return JSON.stringify({x: r.x+r.width/2, y: r.y+r.height/2});
+                    }
+                }
+                return null;
+            """, max_attempts=3)
+            if not p:
+                logger.warning("Web search: Web search radio item not found")
+                tab.js("document.body.click()")
+                return False
+            self._mouse_move(tab, p['x'], p['y'])
+            time.sleep(0.5)
+            self._mouse_click(tab, p['x'], p['y'])
+            time.sleep(2)
+
+            # Dismiss menu
+            tab.js("document.body.click()")
+            time.sleep(2)
+
+            logger.info("Web search enabled")
+            return True
+
+        except Exception as e:
+            logger.warning("Web search toggle failed: %s", e)
+            try:
+                tab.js("document.body.click()")
+            except Exception:
+                pass
+            return False
+
+    def _type_prompt(self, tab, prompt):
+        """Focus input and type prompt via Input.insertText."""
+        logger.info("Typing prompt (%d chars)", len(prompt))
+        tab.js("""
+            var el = document.querySelector('#prompt-textarea, div[contenteditable="true"]');
+            if (el) el.focus();
+        """)
+        wait_human(1, 2)
+        tab._send("Input.insertText", {"text": prompt})
+        wait_human(2, 3)
+
+    def _click_send(self, tab):
+        """Click send button via mouse events. Falls back to JS click.
+
+        Raises RuntimeError if send button not found.
+        """
+        # Wait for send button
+        send_found = False
+        for _ in range(10):
+            if tab.js("return document.querySelector('button[data-testid=\"send-button\"]') ? 'f' : ''") == 'f':
+                send_found = True
+                break
+            time.sleep(2)
+
+        if not send_found:
+            raise RuntimeError("Send button not available after typing prompt")
+
+        # Try mouse click first
+        p = self._find_element_pos(tab, """
+            var btn = document.querySelector('button[data-testid="send-button"]');
+            if (!btn) return null;
+            var r = btn.getBoundingClientRect();
+            return JSON.stringify({x: r.x+r.width/2, y: r.y+r.height/2});
+        """, max_attempts=3)
+
+        if p:
+            logger.info("Clicking send (mouse click)")
+            self._mouse_click(tab, p['x'], p['y'])
+        else:
+            # Fallback to JS click
+            logger.info("Clicking send (JS fallback)")
+            tab.js("""
+                var btn = document.querySelector('button[data-testid="send-button"]');
+                if (btn) btn.click();
+            """)
+
+    def _wait_for_reply(self, tab, timeout: int = REPLY_TIMEOUT) -> str:
+        """Wait for ChatGPT reply with exponential backoff stability check.
+
+        Phase 1: Wait for streaming to start (assistant message appears)
+                 Also detects "stuck thinking" — thinking dot present but no tokens for 60s
+        Phase 2: Wait for streaming to stop (stop button disappears)
+        Phase 3: Exponential backoff stability check (2s, 4s, 8s, 16s)
+                 — response length must be stable across 2 consecutive checks
+
+        Returns the reply text, or raises RuntimeError on timeout/stuck.
+        """
+        start = time.time()
+        STUCK_TIMEOUT = 300  # 5 minutes of thinking with no tokens = stuck
+
+        # Phase 1: Wait for any assistant message to appear
+        logger.info("Waiting for reply to start...")
+        thinking_since = None
+        while time.time() - start < min(timeout, 180):
+            msg_count = int(tab.js(
+                "return document.querySelectorAll('[data-message-author-role=\"assistant\"]').length;"
+            ) or 0)
+            if msg_count > 0:
+                # Check if the message has actual text or is still empty (thinking)
+                msg_len = int(tab.js("""
+                    var msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+                    if (msgs.length === 0) return 0;
+                    return msgs[msgs.length - 1].textContent.trim().length;
+                """) or 0)
+                if msg_len > 0:
+                    logger.info("Reply started (%.1fs)", time.time() - start)
+                    break
+                # Message exists but empty — thinking dot
+                if thinking_since is None:
+                    thinking_since = time.time()
+                    logger.info("Thinking dot detected...")
+                elif time.time() - thinking_since > STUCK_TIMEOUT:
+                    raise RuntimeError(f"Stuck: thinking dot for {STUCK_TIMEOUT}s with no tokens")
+            else:
+                # No message at all — check for thinking indicator in DOM
+                has_thinking = tab.js("""
+                    var dots = document.querySelector('[class*="result-thinking"], [class*="streaming"]');
+                    return dots ? 'yes' : 'no';
+                """) or 'no'
+                if has_thinking == 'yes':
+                    if thinking_since is None:
+                        thinking_since = time.time()
+                        logger.info("Thinking indicator detected...")
+                    elif time.time() - thinking_since > STUCK_TIMEOUT:
+                        raise RuntimeError(f"Stuck: thinking for {STUCK_TIMEOUT}s with no response")
+
+            time.sleep(2)
+        else:
+            raise RuntimeError("No reply started after 180 seconds")
+
+        # Phase 2: Wait for streaming to stop (stop button disappears)
+        logger.info("Streaming in progress...")
+        while time.time() - start < timeout:
+            has_stop = tab.js("""
+                var stop = document.querySelector('button[aria-label="Stop"], button[data-testid="stop-button"]');
+                return stop ? 'yes' : 'no';
+            """) or 'no'
+            if has_stop == 'no':
+                logger.info("Streaming stopped (%.1fs)", time.time() - start)
+                break
+            time.sleep(2)
+        else:
+            raise RuntimeError(f"Reply still streaming after {timeout} seconds")
+
+        # Phase 3: Exponential backoff stability check
+        logger.info("Stability check (exponential backoff)...")
+        prev_length = 0
+        stable_count = 0
+        backoff = 2
+
+        while time.time() - start < timeout and backoff <= 16:
+            time.sleep(backoff)
+            current_length = int(tab.js("""
+                var msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+                if (msgs.length === 0) return 0;
+                var last = msgs[msgs.length - 1];
+                return last.textContent.trim().length;
+            """) or 0)
+
+            if current_length == prev_length and current_length > 0:
+                stable_count += 1
+                logger.info("  Stable at %d chars (check %d, backoff %ds)",
+                            current_length, stable_count, backoff)
+                if stable_count >= 2:
+                    break
+            else:
+                stable_count = 0
+                logger.info("  Length changed: %d -> %d (backoff %ds)",
+                            prev_length, current_length, backoff)
+
+            prev_length = current_length
+            backoff = min(backoff * 2, 16)
+
+        # Final extract
+        reply = tab.js("""
+            return (function() {
+                var msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+                if (msgs.length === 0) return '';
+                var last = msgs[msgs.length - 1];
+                var md = last.querySelector('.markdown');
+                return md ? md.textContent.trim() : last.textContent.trim();
+            })();
+        """) or ""
+
+        elapsed = time.time() - start
+        logger.info("Reply captured: %d chars in %.1fs", len(reply), elapsed)
+        return reply
+
     # ── Service handling ─────────────────────────────────────
 
     def handle_request(self, service_name: str, payload: dict, cdp: CDPClient) -> dict:
         """Handle a service request. Always returns dict with data or error."""
         if service_name == "execute_prompt":
-            return self._execute_prompt(payload, cdp)
+            return self._execute(payload, cdp, with_images=False)
         if service_name == "execute_prompt_with_image":
-            return self._execute_prompt_with_image(payload, cdp)
+            return self._execute(payload, cdp, with_images=True)
         return {"error": f"Unknown service: {service_name}"}
 
-    def _execute_prompt(self, payload: dict, cdp: CDPClient) -> dict:
-        """Send prompt to ChatGPT, wait for reply, return it."""
+    def _execute(self, payload: dict, cdp: CDPClient, with_images: bool,
+                 _retry_count: int = 0) -> dict:
+        """Unified execution: open tab → fresh chat → [images] → [web search] → type → send → wait.
+
+        Retries up to 2 times on stuck/timeout errors (fresh tab each retry).
+
+        payload:
+            prompt: str — the text prompt (required)
+            image_paths: list[str] — absolute paths to images (required if with_images=True)
+            web_search: bool — enable web search (optional, default False)
+        """
+        MAX_RETRIES = 2
         prompt = payload.get("prompt", "")
+        image_paths = payload.get("image_paths", [])
+        want_web_search = payload.get("web_search", False)
+
         if not prompt:
             return {"error": "Empty prompt"}
+        if with_images and not image_paths:
+            return {"error": "No image paths provided"}
+        if with_images:
+            for p in image_paths:
+                if not os.path.isfile(p):
+                    return {"error": f"Image file not found: {p}"}
 
+        web_search_enabled = False
         tab = None
         try:
-            # Step 1: Open new tab to ChatGPT
-            logger.info("Opening ChatGPT for prompt (%d chars)", len(prompt))
+            # Step 1: Open new tab
+            logger.info("Opening ChatGPT (prompt=%d chars, images=%d, web_search=%s, attempt=%d)",
+                        len(prompt), len(image_paths), want_web_search, _retry_count + 1)
             tab = cdp.new_tab("https://chatgpt.com")
 
-            # Step 2: Wait for input field
-            input_found = False
-            for _ in range(15):  # 30 seconds max
-                check = tab.js('''
-                    return document.querySelector('#prompt-textarea') ? 'found' : '';
-                ''')
-                if check == 'found':
-                    input_found = True
-                    break
-                time.sleep(2)
+            # Step 2: Fresh chat
+            self._open_fresh_chat(tab)
 
-            if not input_found:
-                # Check if login issue
-                has_login = tab.js('''
-                    return document.body.innerText.includes('Log in') ? 'yes' : 'no';
-                ''')
-                if has_login == 'yes':
-                    return {"error": "Not logged in to ChatGPT"}
-                return {"error": "ChatGPT page failed to load — input field not found"}
+            # Step 3: Upload images (if any)
+            if with_images:
+                self._upload_images(tab, image_paths)
 
-            # Step 3: Verify it's a new chat (no existing messages)
-            existing = tab.js('''
-                return document.querySelectorAll('[data-message-author-role]').length;
-            ''') or 0
-            if int(existing) > 0:
-                # Navigate to fresh chat
-                tab.navigate("https://chatgpt.com")
-                wait_human(3, 5)
+            # Step 4: Enable web search (if requested)
+            if want_web_search:
+                web_search_enabled = self._enable_web_search(tab)
+                if not web_search_enabled:
+                    logger.warning("Web search requested but failed to enable — proceeding without")
 
-            # Step 4: Type the prompt
-            logger.info("Typing prompt into ChatGPT")
-            # Escape the prompt for JS
-            safe_prompt = prompt.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-            tab.js(f'''
-                var input = document.querySelector('#prompt-textarea');
-                if (input) {{
-                    input.focus();
-                    input.textContent = `{safe_prompt}`;
-                    input.dispatchEvent(new Event('input', {{bubbles: true}}));
-                }}
-            ''')
-            wait_human(1, 2)
-
-            # Step 5: Verify send button appeared
-            send_found = False
-            for _ in range(5):
-                check = tab.js('''
-                    return document.querySelector('button[data-testid="send-button"]') ? 'found' : '';
-                ''')
-                if check == 'found':
-                    send_found = True
-                    break
-                time.sleep(1)
-
-            if not send_found:
-                return {"error": "Send button not available after typing prompt"}
+            # Step 5: Type prompt
+            self._type_prompt(tab, prompt)
 
             # Step 6: Click send
-            logger.info("Clicking send")
-            tab.js('''
-                var btn = document.querySelector('button[data-testid="send-button"]');
-                if (btn) btn.click();
-            ''')
+            self._click_send(tab)
 
-            # Step 7: Poll for completion (copy button or thumbs up)
-            logger.info("Waiting for reply (max %ds)...", REPLY_TIMEOUT)
-            start = time.time()
-            reply_complete = False
-
-            while time.time() - start < REPLY_TIMEOUT:
-                time.sleep(POLL_INTERVAL)
-
-                done = tab.js('''
-                    return (function() {
-                        var copy = document.querySelector('button[data-testid="copy-turn-action-button"]');
-                        var thumbUp = document.querySelector('button[data-testid="good-response-turn-action-button"]');
-                        var thumbDown = document.querySelector('button[data-testid="bad-response-turn-action-button"]');
-                        if (copy || thumbUp || thumbDown) return 'done';
-                        return '';
-                    })();
-                ''')
-                if done == 'done':
-                    reply_complete = True
-                    elapsed = time.time() - start
-                    logger.info("Reply received in %.1fs", elapsed)
-                    break
-
-            if not reply_complete:
-                return {"error": f"Reply timeout after {REPLY_TIMEOUT} seconds"}
-
-            # Step 8: Extract reply text
-            reply = tab.js('''
-                return (function() {
-                    var msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
-                    if (msgs.length === 0) return '';
-                    var last = msgs[msgs.length - 1];
-                    var md = last.querySelector('.markdown');
-                    return md ? md.textContent.trim() : last.textContent.trim();
-                })();
-            ''') or ""
-
+            # Step 7: Wait for reply
+            reply = self._wait_for_reply(tab)
             if not reply:
-                return {"error": "Empty reply from ChatGPT"}
+                return {"error": "Empty reply from ChatGPT", "web_search": web_search_enabled}
 
-            logger.info("Reply: %s", reply[:80])
-            return {"reply": reply}
+            logger.info("Reply: %d chars, web_search=%s", len(reply), web_search_enabled)
+            return {"reply": reply, "web_search": web_search_enabled}
 
-        except Exception as e:
-            logger.error("ChatGPT inference failed: %s", e)
-            return {"error": str(e)}
+        except RuntimeError as e:
+            error_msg = str(e)
+            logger.error("ChatGPT inference failed (attempt %d): %s", _retry_count + 1, error_msg)
 
-        finally:
-            # Step 10: Always close tab
+            # Close the failed tab
             if tab:
                 try:
                     cdp.close_tab(tab)
                 except Exception:
                     pass
+                tab = None
 
-    def _execute_prompt_with_image(self, payload: dict, cdp: CDPClient) -> dict:
-        """Send prompt with images to ChatGPT, wait for reply, return it.
-
-        payload:
-            prompt: str — the text prompt
-            image_paths: list[str] — absolute paths to image files (png/jpg)
-        """
-        prompt = payload.get("prompt", "")
-        image_paths = payload.get("image_paths", [])
-
-        if not prompt:
-            return {"error": "Empty prompt"}
-        if not image_paths:
-            return {"error": "No image paths provided"}
-
-        # Validate all image files exist
-        import os
-        for p in image_paths:
-            if not os.path.isfile(p):
-                return {"error": f"Image file not found: {p}"}
-
-        tab = None
-        try:
-            # Step 1: Open new tab to ChatGPT
-            logger.info("Opening ChatGPT for image prompt (%d chars, %d images)",
-                        len(prompt), len(image_paths))
-            tab = cdp.new_tab("https://chatgpt.com")
-
-            # Step 2: Wait for page to fully load (generous wait)
-            input_found = False
-            for _ in range(20):  # 40 seconds max
-                check = tab.js('''
-                    return document.querySelector('#prompt-textarea') ? 'found' : '';
-                ''')
-                if check == 'found':
-                    input_found = True
-                    break
-                time.sleep(2)
-
-            if not input_found:
-                has_login = tab.js('''
-                    return document.body.innerText.includes('Log in') ? 'yes' : 'no';
-                ''')
-                if has_login == 'yes':
-                    return {"error": "Not logged in to ChatGPT"}
-                return {"error": "ChatGPT page failed to load — input field not found"}
-
-            # Extra settle time after page load
-            wait_human(3, 5)
-
-            # Step 3: Ensure fresh chat — no existing messages
-            for _fresh in range(3):
-                existing = int(tab.js('''
-                    return document.querySelectorAll('[data-message-author-role]').length;
-                ''') or 0)
-                if existing == 0:
-                    break
-                logger.info("Existing messages found (%d) — navigating to fresh chat", existing)
-                tab.navigate("https://chatgpt.com")
-                wait_human(5, 8)
-                # Re-wait for input field
-                for _ in range(15):
-                    if tab.js("return document.querySelector('#prompt-textarea') ? 'found' : ''") == 'found':
-                        break
-                    time.sleep(2)
+            # Retry on stuck/timeout errors
+            if _retry_count < MAX_RETRIES and ("Stuck" in error_msg or "timeout" in error_msg.lower()
+                                                or "No reply started" in error_msg):
+                logger.info("Retrying (%d/%d)...", _retry_count + 1, MAX_RETRIES)
                 wait_human(3, 5)
+                return self._execute(payload, cdp, with_images, _retry_count + 1)
 
-            # Final check — must be zero messages
-            final_count = int(tab.js('''
-                return document.querySelectorAll('[data-message-author-role]').length;
-            ''') or 0)
-            if final_count > 0:
-                return {"error": "Could not get a fresh ChatGPT chat after 3 attempts"}
-
-            # Step 4: Upload images via #upload-photos file input
-            logger.info("Uploading %d image(s)", len(image_paths))
-            tab._send("DOM.enable")
-            doc = tab._send("DOM.getDocument")
-            search = tab._send("DOM.querySelector", {
-                "nodeId": doc["root"]["nodeId"],
-                "selector": "#upload-photos"
-            })
-            file_node_id = search.get("nodeId", 0)
-            if not file_node_id:
-                return {"error": "Image upload input (#upload-photos) not found"}
-
-            # Convert to absolute paths (DOM.setFileInputFiles requires absolute)
-            abs_paths = [os.path.abspath(p) for p in image_paths]
-            tab._send("DOM.setFileInputFiles", {
-                "nodeId": file_node_id,
-                "files": abs_paths
-            })
-            logger.info("Images set on file input")
-
-            # Wait for images to upload and preview to appear
-            wait_human(5, 8)
-
-            # Step 5: Type the prompt using Input.insertText
-            logger.info("Typing prompt")
-            tab.js('''
-                var el = document.querySelector('#prompt-textarea, div[contenteditable="true"]');
-                if (el) el.focus();
-            ''')
-            wait_human(1, 2)
-            tab._send("Input.insertText", {"text": prompt})
-            wait_human(2, 3)
-
-            # Step 6: Wait for send button and click
-            send_found = False
-            for _ in range(10):  # 20 seconds max
-                check = tab.js('''
-                    var btn = document.querySelector('button[data-testid="send-button"]');
-                    if (btn) return 'found';
-                    // Fallback: any submit-like button in form
-                    var form = document.querySelector('form');
-                    if (form) {
-                        var btns = form.querySelectorAll('button[type="button"]');
-                        for (var b of btns) {
-                            var label = b.getAttribute('aria-label') || '';
-                            if (label.includes('Send')) return 'found';
-                        }
-                    }
-                    return '';
-                ''')
-                if check == 'found':
-                    send_found = True
-                    break
-                time.sleep(2)
-
-            if not send_found:
-                return {"error": "Send button not available after typing prompt with image"}
-
-            logger.info("Clicking send")
-            tab.js('''
-                var btn = document.querySelector('button[data-testid="send-button"]');
-                if (btn) { btn.click(); return; }
-                var form = document.querySelector('form');
-                if (form) {
-                    var btns = form.querySelectorAll('button');
-                    for (var b of btns) {
-                        var label = b.getAttribute('aria-label') || '';
-                        if (label.includes('Send')) { b.click(); return; }
-                    }
-                }
-            ''')
-
-            # Step 7: Poll for completion (fresh chat = simple detection)
-            # Copy/thumbs buttons appear only when response is fully done
-            logger.info("Waiting for reply (max %ds, image analysis may take longer)...",
-                        REPLY_TIMEOUT)
-            start = time.time()
-            reply_complete = False
-
-            while time.time() - start < REPLY_TIMEOUT:
-                time.sleep(POLL_INTERVAL)
-
-                done = tab.js('''
-                    return (function() {
-                        var copy = document.querySelector('button[data-testid="copy-turn-action-button"]');
-                        var thumbUp = document.querySelector('button[data-testid="good-response-turn-action-button"]');
-                        var thumbDown = document.querySelector('button[data-testid="bad-response-turn-action-button"]');
-                        if (copy || thumbUp || thumbDown) return 'done';
-                        return '';
-                    })();
-                ''')
-                if done == 'done':
-                    reply_complete = True
-                    elapsed = time.time() - start
-                    logger.info("Reply received in %.1fs", elapsed)
-                    break
-
-            if not reply_complete:
-                return {"error": f"Reply timeout after {REPLY_TIMEOUT} seconds"}
-
-            # Extra wait after completion to ensure full content rendered
-            wait_human(3, 5)
-
-            # Step 8: Extract reply text (get the LAST assistant message)
-            reply = tab.js('''
-                return (function() {
-                    var msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
-                    if (msgs.length === 0) return '';
-                    var last = msgs[msgs.length - 1];
-                    var md = last.querySelector('.markdown');
-                    return md ? md.textContent.trim() : last.textContent.trim();
-                })();
-            ''') or ""
-
-            if not reply:
-                return {"error": "Empty reply from ChatGPT"}
-
-            logger.info("Image prompt reply: %d chars", len(reply))
-            return {"reply": reply}
+            return {"error": error_msg, "web_search": web_search_enabled}
 
         except Exception as e:
-            logger.error("ChatGPT image inference failed: %s", e)
-            return {"error": str(e)}
+            logger.error("ChatGPT inference unexpected error: %s", e)
+            return {"error": str(e), "web_search": web_search_enabled}
 
         finally:
             if tab:
