@@ -6,1166 +6,430 @@
     <title>Memory Tap</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; line-height: 1.6; }
-        a { color: #7c3aed; text-decoration: none; }
-        .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f; color: #e0e0e0; line-height: 1.6;
+        }
+        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
 
         /* Header */
-        header { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; border-bottom: 1px solid #2a2a2a; margin-bottom: 24px; }
-        header h1 { font-size: 22px; font-weight: 600; cursor: pointer; }
+        header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 20px 0; border-bottom: 1px solid #2a2a2a; margin-bottom: 30px;
+        }
+        header h1 { font-size: 24px; font-weight: 600; }
         header h1 span { color: #7c3aed; }
-        .header-right { display: flex; align-items: center; gap: 16px; }
-        .nav-btn { padding: 6px 14px; border: 1px solid #333; border-radius: 6px; background: none; color: #ccc; cursor: pointer; font-size: 13px; }
-        .nav-btn:hover { background: #1a1a1a; }
-        .nav-btn.active { border-color: #7c3aed; color: #7c3aed; }
 
-        /* Notification bell */
-        .bell { position: relative; cursor: pointer; font-size: 18px; padding: 4px 8px; }
-        .bell-badge { position: absolute; top: -2px; right: -2px; background: #ef4444; color: white; font-size: 10px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-        .notif-dropdown { display: none; position: absolute; right: 0; top: 36px; width: 350px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; z-index: 100; max-height: 400px; overflow-y: auto; }
-        .notif-dropdown.show { display: block; }
-        .notif-item { padding: 10px 14px; border-bottom: 1px solid #222; cursor: pointer; }
-        .notif-item:hover { background: #222; }
-        .notif-item .level { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
-        .notif-item .level.info { background: #3b82f6; }
-        .notif-item .level.warning { background: #eab308; }
-        .notif-item .level.error { background: #ef4444; }
-        .notif-item .title { font-size: 13px; font-weight: 500; }
-        .notif-item .meta { font-size: 11px; color: #666; margin-top: 2px; }
-        .notif-header { padding: 10px 14px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+        /* Nav tabs */
+        .tabs {
+            display: flex; gap: 4px; margin-bottom: 30px;
+            border-bottom: 1px solid #2a2a2a; padding-bottom: 0;
+        }
+        .tab {
+            padding: 10px 20px; cursor: pointer; border: none; background: none;
+            color: #888; font-size: 14px; border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab:hover { color: #ccc; }
+        .tab.active { color: #7c3aed; border-bottom-color: #7c3aed; }
 
-        /* Cards */
-        .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
-        .stat-card { text-align: center; padding: 16px; }
+        /* Panels */
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        /* Stats bar */
+        .stats-bar {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
+            padding: 16px; text-align: center;
+        }
         .stat-card .number { font-size: 28px; font-weight: 700; color: #7c3aed; }
         .stat-card .label { font-size: 12px; color: #888; text-transform: uppercase; }
-        .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; margin-bottom: 20px; }
-
-        /* Widget grid */
-        .widget-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
-        .widget { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px; cursor: pointer; transition: border-color 0.2s; min-height: 120px; }
-        .widget:hover { border-color: #7c3aed44; }
-        .widget-title { font-size: 13px; color: #888; margin-bottom: 8px; font-weight: 500; }
-        .widget.small { grid-column: span 1; }
-        .widget.medium { grid-column: span 1; }
-        .widget.large { grid-column: span 2; grid-row: span 2; }
-        .widget.wide { grid-column: span 3; }
 
         /* Timeline */
-        .timeline-group { margin-bottom: 20px; }
-        .timeline-date { font-size: 13px; font-weight: 600; color: #7c3aed; margin-bottom: 8px; padding-left: 12px; border-left: 2px solid #7c3aed; }
-        .timeline-item { padding: 8px 12px; border-bottom: 1px solid #1a1a1a; font-size: 13px; }
-        .timeline-item .item-title { font-weight: 500; }
-        .timeline-item .item-meta { color: #666; font-size: 12px; }
+        .timeline-day {
+            margin-bottom: 24px; border-left: 2px solid #2a2a2a; padding-left: 20px;
+        }
+        .timeline-date {
+            font-size: 14px; font-weight: 600; color: #7c3aed; margin-bottom: 12px;
+            position: relative;
+        }
+        .timeline-date::before {
+            content: ''; position: absolute; left: -25px; top: 4px;
+            width: 10px; height: 10px; border-radius: 50%;
+            background: #7c3aed; border: 2px solid #0f0f0f;
+        }
+        .timeline-item {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
+            padding: 12px 16px; margin-bottom: 8px;
+        }
+        .timeline-item .source-badge {
+            display: inline-block; padding: 2px 8px; border-radius: 4px;
+            font-size: 11px; font-weight: 600; margin-right: 8px;
+        }
+        .badge-chatgpt { background: #10a37f22; color: #10a37f; }
+        .badge-gemini { background: #4285f422; color: #4285f4; }
+        .badge-youtube { background: #ff000022; color: #ff4444; }
+        .badge-sync { background: #7c3aed22; color: #7c3aed; }
+        .timeline-item .title { font-weight: 500; }
+        .timeline-item .meta { font-size: 12px; color: #666; margin-top: 4px; }
 
-        /* Progress list */
-        .progress-item { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #1a1a1a; }
-        .progress-bar-bg { flex: 0 0 80px; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
-        .progress-bar-fill { height: 100%; background: #7c3aed; border-radius: 3px; }
-        .progress-item .pct { font-size: 12px; color: #888; width: 35px; }
-        .progress-item .item-title { font-size: 13px; flex: 1; }
-
-        /* Grid (for shorts, images) */
-        .thumb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
-        .thumb-item { background: #222; border-radius: 6px; padding: 8px; font-size: 12px; }
-
-        /* Table */
-        .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .data-table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #333; color: #888; font-weight: 500; }
-        .data-table td { padding: 8px 12px; border-bottom: 1px solid #1a1a1a; }
-
-        /* Conversation */
-        .conv-msg { padding: 10px 14px; margin-bottom: 8px; border-radius: 8px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
-        .conv-msg.user { background: #1a1a2e; margin-left: 40px; }
-        .conv-msg.assistant { background: #1a1a1a; margin-right: 40px; }
-        .conv-msg .role-label { font-size: 11px; color: #888; margin-bottom: 4px; font-weight: 600; }
-        .conv-msg .msg-content { line-height: 1.5; }
-        .conv-msg .thinking { margin-top: 8px; font-size: 12px; color: #666; }
-        .conv-msg .thinking pre { background: #111; padding: 8px; border-radius: 4px; font-size: 11px; overflow-x: auto; }
-        .conv-msg .sources { font-size: 11px; color: #7c5cff; margin-top: 6px; }
-        .conv-msg .code-detail { margin-top: 8px; }
-        .conv-msg .code-detail pre { background: #111; padding: 8px; border-radius: 4px; font-size: 11px; overflow-x: auto; }
-        .timeline-item.clickable { cursor: pointer; }
-        .timeline-item.clickable:hover { background: #1a1a2e; border-radius: 8px; }
-        .messages-container { margin-top: 8px; padding-left: 16px; border-left: 2px solid #7c5cff; }
-        .btn-dismiss { background: none; border: 1px solid #444; color: #888; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 12px; }
-        .btn-dismiss:hover { border-color: #ff4444; color: #ff4444; }
-
-        /* Search */
-        .search-box { display: flex; gap: 8px; margin-bottom: 16px; }
-        .search-box input { flex: 1; padding: 10px 14px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #e0e0e0; font-size: 14px; }
-        .search-result { padding: 10px 14px; border-bottom: 1px solid #1a1a1a; }
-        .search-result .sr-title { font-weight: 500; font-size: 14px; }
-        .search-result .sr-snippet { font-size: 12px; color: #888; margin-top: 2px; }
-
-        /* Buttons */
-        .btn { padding: 6px 14px; border: 1px solid #333; border-radius: 6px; background: #1a1a1a; color: #e0e0e0; cursor: pointer; font-size: 13px; }
-        .btn:hover { background: #2a2a2a; }
-        .btn.primary { background: #7c3aed; border-color: #7c3aed; color: white; }
-        .btn.primary:hover { background: #6d28d9; }
-
-        /* Section */
-        .section { margin-bottom: 24px; }
-        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; cursor: pointer; }
-        .section-header h3 { font-size: 16px; }
-        .section-header .toggle { color: #666; }
-        .section-content.collapsed { display: none; }
-
-        /* Skill page back */
-        .back-btn { display: inline-flex; align-items: center; gap: 6px; color: #888; font-size: 13px; cursor: pointer; margin-bottom: 16px; }
-        .back-btn:hover { color: #e0e0e0; }
-
-        /* Settings */
-        .setting-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid #1a1a1a; }
-        .setting-row label { width: 150px; font-size: 14px; color: #888; }
-        .setting-row input, .setting-row select { flex: 1; padding: 8px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; color: #e0e0e0; font-size: 14px; }
-
-        /* Skill card (settings) */
-        .skill-card { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; margin-bottom: 8px; }
-        .skill-info h4 { font-size: 14px; }
-        .skill-info .skill-meta { font-size: 12px; color: #888; margin-top: 2px; }
+        /* Sources */
+        .source-card {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
+            padding: 16px; margin-bottom: 12px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .source-info h3 { font-size: 16px; }
+        .source-info .status { font-size: 12px; margin-top: 4px; }
         .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
         .status-dot.green { background: #22c55e; }
         .status-dot.red { background: #ef4444; }
         .status-dot.yellow { background: #eab308; }
+        .source-actions { display: flex; gap: 8px; }
 
-        /* Indemnity overlay */
-        .overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.95); z-index: 1000; display: flex; align-items: center; justify-content: center; }
-        .overlay-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; max-width: 640px; width: 90%; max-height: 90vh; overflow-y: auto; padding: 32px; }
-        .overlay-box h2 { font-size: 22px; margin-bottom: 16px; color: #7c3aed; }
-        .overlay-box h3 { font-size: 16px; margin: 16px 0 8px; color: #ccc; }
-        .overlay-box p, .overlay-box li { font-size: 14px; color: #999; line-height: 1.7; }
-        .overlay-box ul { padding-left: 20px; margin-bottom: 12px; }
-        .overlay-box .hl { color: #e0e0e0; font-weight: 500; }
-        .checkbox-row { display: flex; align-items: flex-start; gap: 10px; margin: 20px 0 16px; }
-        .checkbox-row input { margin-top: 4px; }
-        .checkbox-row label { font-size: 13px; color: #ccc; }
+        /* Buttons */
+        .btn {
+            padding: 6px 14px; border: 1px solid #333; border-radius: 6px;
+            background: #1a1a1a; color: #e0e0e0; cursor: pointer; font-size: 13px;
+            transition: all 0.2s;
+        }
+        .btn:hover { background: #2a2a2a; }
+        .btn.primary { background: #7c3aed; border-color: #7c3aed; color: white; }
+        .btn.primary:hover { background: #6d28d9; }
+        .btn.danger { border-color: #ef4444; color: #ef4444; }
 
-        /* Wizard */
-        .wizard-step { display: flex; align-items: center; gap: 16px; padding: 14px 16px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; margin-bottom: 8px; }
-        .wizard-step.done { border-color: #22c55e44; }
-        .wizard-step .step-num { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
-        .wizard-step.done .step-num { background: #22c55e33; color: #22c55e; }
-        .wizard-step:not(.done) .step-num { background: #7c3aed33; color: #7c3aed; }
-        .wizard-step .step-info { flex: 1; }
-        .wizard-step .step-info h4 { font-size: 14px; }
-        .wizard-step .step-info p { font-size: 12px; color: #888; }
+        /* Settings */
+        .setting-row {
+            display: flex; align-items: center; gap: 16px;
+            padding: 12px 0; border-bottom: 1px solid #1a1a1a;
+        }
+        .setting-row label { width: 150px; font-size: 14px; color: #888; }
+        .setting-row input, .setting-row select {
+            flex: 1; padding: 8px 12px; background: #1a1a1a; border: 1px solid #333;
+            border-radius: 6px; color: #e0e0e0; font-size: 14px;
+        }
 
+        /* Search */
+        .search-bar {
+            display: flex; gap: 8px; margin-bottom: 20px;
+        }
+        .search-bar input {
+            flex: 1; padding: 10px 16px; background: #1a1a1a; border: 1px solid #333;
+            border-radius: 8px; color: #e0e0e0; font-size: 14px;
+        }
+        .search-result {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
+            padding: 12px 16px; margin-bottom: 8px;
+        }
+        .search-result .snippet { color: #aaa; font-size: 13px; margin-top: 4px; }
+
+        /* Loading */
         .loading { text-align: center; padding: 40px; color: #666; }
-        .empty { text-align: center; padding: 30px; color: #555; font-size: 14px; }
-
-        /* Chat */
-        .chat-container { display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 400px; }
-        .chat-messages { flex: 1; overflow-y: auto; padding: 12px 0; }
-        .chat-msg { padding: 10px 14px; margin-bottom: 8px; border-radius: 10px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-width: 85%; }
-        .chat-msg.user { background: #1a1a3e; margin-left: auto; border-bottom-right-radius: 2px; }
-        .chat-msg.assistant { background: #1a1a1a; margin-right: auto; border-bottom-left-radius: 2px; }
-        .chat-msg .msg-role { font-size: 11px; color: #888; margin-bottom: 4px; font-weight: 600; }
-        .chat-sources { margin-top: 8px; padding-top: 8px; border-top: 1px solid #333; }
-        .chat-sources .source-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin: 2px 4px 2px 0; }
-        .chat-sources .source-tag.youtube { background: #ff000022; color: #ff4444; }
-        .chat-sources .source-tag.chatgpt { background: #10a37f22; color: #10a37f; }
-        .chat-sources .source-tag.gemini { background: #4285f422; color: #4285f4; }
-        .chat-input-row { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid #2a2a2a; }
-        .chat-input-row input { flex: 1; padding: 12px 16px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #e0e0e0; font-size: 14px; }
-        .chat-input-row input:focus { outline: none; border-color: #7c3aed; }
-        .chat-typing { color: #888; font-size: 13px; padding: 8px 14px; font-style: italic; }
-
-        /* Search + Chat layout */
-        .search-chat-tabs { display: flex; gap: 4px; margin-bottom: 16px; }
-        .search-chat-tab { padding: 8px 16px; cursor: pointer; border: none; background: none; color: #888; font-size: 13px; border-bottom: 2px solid transparent; }
-        .search-chat-tab:hover { color: #ccc; }
-        .search-chat-tab.active { color: #7c3aed; border-bottom-color: #7c3aed; }
-        .sc-panel { display: none; }
-        .sc-panel.active { display: block; }
-
-        /* Source badge in search results */
-        .sr-source { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; margin-right: 6px; }
-        .sr-source.youtube_history { background: #ff000022; color: #ff4444; }
-        .sr-source.chatgpt_history { background: #10a37f22; color: #10a37f; }
-        .sr-source.gemini_history { background: #4285f422; color: #4285f4; }
-
-        /* Customize modal */
-        .customize-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 500; display: flex; align-items: center; justify-content: center; }
-        .customize-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; width: 500px; max-width: 90%; max-height: 80vh; overflow-y: auto; padding: 24px; }
-        .customize-box h3 { margin-bottom: 16px; }
-        .customize-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #222; }
-        .customize-item label { flex: 1; font-size: 14px; cursor: pointer; }
-        .customize-item input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
-        .customize-item .drag-handle { color: #555; cursor: grab; font-size: 16px; }
-        .customize-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
-
-        /* Widget header with refresh */
-        .widget-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .widget-header .widget-title { margin-bottom: 0; }
-        .widget-meta { display: flex; align-items: center; gap: 6px; }
-        .widget-updated { font-size: 10px; color: #555; }
-        .widget-refresh { background: none; border: none; color: #555; cursor: pointer; font-size: 13px; padding: 2px 4px; border-radius: 4px; }
-        .widget-refresh:hover { color: #7c3aed; background: #7c3aed22; }
-
-        /* Home page toolbar */
-        .home-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-        .home-toolbar h2 { font-size: 18px; }
-
-        /* Skill page link in widgets */
-        .skill-link { color: #7c3aed; cursor: pointer; font-size: 12px; }
-        .skill-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
-    <!-- Internet down banner -->
-    <div id="internet-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:white;text-align:center;padding:10px 16px;font-size:14px;font-weight:600;">
-        No internet connection — skills paused
-    </div>
-
-    <!-- Indemnity Overlay -->
-    <div id="indemnity" class="overlay" style="display:none">
-        <div class="overlay-box">
-            <h2>Welcome to Memory Tap</h2>
-            <p>Before you begin, please read and understand what this application does.</p>
-            <h3>What Memory Tap Does</h3>
-            <p>Memory Tap connects to a <span class="hl">separate, isolated Chrome browser</span> and navigates websites you use — such as YouTube, ChatGPT, and Google Gemini — to collect your conversation history and watch history into a <span class="hl">local database on your machine</span>.</p>
-            <h3>How It Works</h3>
-            <ul>
-                <li>Launches its own Chrome instance with a <span class="hl">separate profile</span> — never touches your main browser.</li>
-                <li>You sign into your accounts inside this isolated Chrome, giving Memory Tap access to your session cookies.</li>
-                <li>A Python program controls this Chrome using the <span class="hl">Chrome DevTools Protocol (CDP)</span>, navigating pages and reading content like a human.</li>
-                <li>Collection runs periodically in the background (every few hours).</li>
-            </ul>
-            <h3>Your Data</h3>
-            <ul>
-                <li><span class="hl">All data stays on your machine</span> — no uploads, no telemetry.</li>
-                <li>Optional RAG chat sends queries to OpenRouter (requires your own API key).</li>
-            </ul>
-            <h3>Risks</h3>
-            <ul>
-                <li><span class="hl">Session access:</span> You are granting a Python program access to your authenticated sessions.</li>
-                <li><span class="hl">Terms of service:</span> Automated browsing may violate some websites' ToS.</li>
-                <li><span class="hl">Local security:</span> Data is stored unencrypted on your filesystem.</li>
-                <li>This software is <a href="https://github.com/vysakhrnambiar/memory-tap-skills" target="_blank">open source</a>.</li>
-            </ul>
-            <div class="checkbox-row">
-                <input type="checkbox" id="consent-cb" onchange="document.getElementById('consent-btn').disabled=!this.checked">
-                <label for="consent-cb">I have read and understand the above. I acknowledge that Memory Tap will access my authenticated browser sessions. All data stays local. I use this at my own risk.</label>
-            </div>
-            <div style="text-align:center">
-                <button class="btn primary" id="consent-btn" disabled onclick="acceptConsent()" style="font-size:15px;padding:12px 32px">I Understand &amp; Accept</button>
-            </div>
-        </div>
-    </div>
-
     <div class="container">
         <header>
-            <h1 onclick="navigate('home')"><span>Memory</span> Tap</h1>
-            <div class="header-right">
-                <button class="nav-btn" id="nav-home" onclick="navigate('home')">Home</button>
-                <button class="nav-btn" id="nav-search" onclick="navigate('search')">Search &amp; Chat</button>
-                <button class="nav-btn" id="nav-settings" onclick="navigate('settings')">Settings</button>
-                <div class="bell" onclick="toggleNotifs()">
-                    <span>&#128276;</span>
-                    <div class="bell-badge" id="notif-badge" style="display:none">0</div>
-                    <div class="notif-dropdown" id="notif-dropdown">
-                        <div class="notif-header"><span>Notifications</span><span style="cursor:pointer;color:#7c3aed" onclick="readAllNotifs(event)">Mark all read</span></div>
-                        <div id="notif-list"></div>
-                    </div>
-                </div>
+            <h1><span>Memory</span> Tap</h1>
+            <div style="display:flex;align-items:center;gap:12px">
+                <a href="/interests" target="_blank" style="padding:6px 14px;background:#7c3aed;color:white;border-radius:6px;text-decoration:none;font-size:13px;font-weight:500;transition:background 0.2s" onmouseover="this.style.background='#6d28d9'" onmouseout="this.style.background='#7c3aed'">Interest Timeline</a>
+                <span id="status-text" style="font-size:12px;color:#666">Starting...</span>
             </div>
         </header>
 
-        <div id="page-content">
-            <div class="loading">Loading...</div>
+        <div class="tabs">
+            <button class="tab active" data-tab="timeline">Timeline</button>
+            <button class="tab" data-tab="sources">Sources</button>
+            <button class="tab" data-tab="search">Search</button>
+            <button class="tab" data-tab="settings">Settings</button>
+        </div>
+
+        <!-- Timeline Panel -->
+        <div id="timeline" class="panel active">
+            <div class="stats-bar" id="stats-bar"></div>
+            <div id="timeline-content"><div class="loading">Loading timeline...</div></div>
+        </div>
+
+        <!-- Sources Panel -->
+        <div id="sources" class="panel">
+            <div id="sources-list"><div class="loading">Loading sources...</div></div>
+        </div>
+
+        <!-- Search Panel -->
+        <div id="search" class="panel">
+            <div class="search-bar">
+                <input type="text" id="search-input" placeholder="Search your collected data..." />
+                <button class="btn primary" onclick="doSearch()">Search</button>
+            </div>
+            <div id="search-results"></div>
+        </div>
+
+        <!-- Settings Panel -->
+        <div id="settings" class="panel">
+            <h2 style="margin-bottom:20px;font-size:18px">Settings</h2>
+
+            <div class="setting-row">
+                <label>OpenRouter API Key</label>
+                <input type="password" id="openrouter-api-key" placeholder="sk-or-..." />
+            </div>
+
+            <div class="setting-row">
+                <label>Interest Extraction Model</label>
+                <select id="interest-timeline-model">
+                    <option value="google/gemini-3-pro-preview">google/gemini-3-pro-preview (best quality)</option>
+                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (fast, good quality)</option>
+                    <option value="google/gemini-3.1-flash-lite-preview">google/gemini-3.1-flash-lite-preview (cheapest)</option>
+                </select>
+            </div>
+
+            <div class="setting-row">
+                <label>Garbage Detection Model</label>
+                <select id="garbage-detection-model">
+                    <option value="google/gemini-3.1-flash-lite-preview">google/gemini-3.1-flash-lite-preview (fast, default)</option>
+                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash</option>
+                </select>
+            </div>
+
+            <div style="margin-top:16px">
+                <button class="btn primary" onclick="saveSettings()">Save Settings</button>
+                <span id="settings-status" style="margin-left:12px;font-size:13px;color:#666"></span>
+            </div>
         </div>
     </div>
 
     <script>
-        let currentPage = 'home';
-        let currentSkill = null;
-
-        // ============================================================
-        // Navigation
-        // ============================================================
-        var _pendingConvId = null;
-        function navigate(page, data, convId) {
-            currentPage = page;
-            currentSkill = data || null;
-            _pendingConvId = convId || null;
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-            const navBtn = document.getElementById('nav-' + page);
-            if (navBtn) navBtn.classList.add('active');
-
-            if (page === 'home') renderHome();
-            else if (page === 'search') renderSearchChat();
-            else if (page === 'settings') renderSettings();
-            else if (page === 'skill') renderSkillPage(data);
-        }
-
-        // ============================================================
-        // Consent
-        // ============================================================
-        async function checkConsent() {
-            const resp = await fetch('/api/settings');
-            const data = await resp.json();
-            if (data.consent_accepted === 'yes') {
-                document.getElementById('indemnity').style.display = 'none';
-                navigate('home');
-            } else {
-                document.getElementById('indemnity').style.display = 'flex';
-            }
-        }
-
-        async function acceptConsent() {
-            await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({consent_accepted: 'yes', consent_date: new Date().toISOString()}) });
-            document.getElementById('indemnity').style.display = 'none';
-            navigate('home');
-        }
-
-        // ============================================================
-        // Notifications
-        // ============================================================
-        function toggleNotifs() {
-            document.getElementById('notif-dropdown').classList.toggle('show');
-            event.stopPropagation();
-        }
-        document.addEventListener('click', () => document.getElementById('notif-dropdown').classList.remove('show'));
-
-        async function loadNotifs() {
-            const resp = await fetch('/api/notifications');
-            const notifs = await resp.json();
-            const badge = document.getElementById('notif-badge');
-            const unread = notifs.filter(n => !n.read).length;
-            badge.style.display = unread > 0 ? 'flex' : 'none';
-            badge.textContent = unread;
-
-            const list = document.getElementById('notif-list');
-            if (notifs.length === 0) { list.innerHTML = '<div class="empty">No notifications</div>'; return; }
-            list.innerHTML = notifs.slice(0, 10).map(n => `
-                <div class="notif-item" onclick="notifClick(${n.id}, '${esc(n.link_to || '')}')">
-                    <span class="level ${n.level}"></span>
-                    <span class="title">${esc(n.title)}</span>
-                    <div class="meta">${esc(n.skill_name)} &middot; ${timeAgo(n.created_at)}</div>
-                </div>
-            `).join('');
-        }
-
-        async function notifClick(id, link) {
-            await fetch(`/api/notifications/${id}/read`, { method: 'POST' });
-            loadNotifs();
-            if (link && link.startsWith('/skill/')) navigate('skill', link.replace('/skill/', ''));
-        }
-
-        async function readAllNotifs(e) {
-            e.stopPropagation();
-            await fetch('/api/notifications/read_all', { method: 'POST' });
-            loadNotifs();
-        }
-
-        // ============================================================
-        // Renderers (display types)
-        // ============================================================
-        function renderStatCards(data) {
-            return `<div class="stat-grid">${data.map(s => `<div class="card stat-card"><div class="number">${s.value}</div><div class="label">${esc(s.label)}</div></div>`).join('')}</div>`;
-        }
-
-        var _timelineSkill = ''; // set before calling renderTimeline for conversation click support
-        function renderTimeline(data) {
-            if (!data.length) return '<div class="empty">No data yet</div>';
-            // Group by date if items have a date field
-            const groups = {};
-            data.forEach(item => {
-                const date = item.watched_date || item.date || item.created_at || 'Unknown';
-                const day = date.substring(0, 10);
-                if (!groups[day]) groups[day] = [];
-                groups[day].push(item);
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab).classList.add('active');
             });
-            return Object.entries(groups).map(([date, items]) => `
-                <div class="timeline-group">
-                    <div class="timeline-date">${formatDate(date)}</div>
-                    ${items.map(item => {
-                        const hasMessages = item.id && item.message_count && item.message_count > 0;
-                        const skillName = item._skill || _timelineSkill || '';
-                        return `
-                        <div class="timeline-item${hasMessages ? ' clickable' : ''}" data-conv-id="${item.id || ''}"
-                             ${hasMessages ? `onclick="event.preventDefault(); if(currentPage==='skill'){toggleMessages('${skillName}',${item.id},this)}else{navigate('skill','${skillName}',${item.id})}"` : ''}>
-                            <div class="item-title">${esc(item.title || '')}</div>
-                            <div class="item-meta">${esc(item.channel || item.source || '')} ${item.duration ? '&middot; ' + formatDuration(item.duration, item.watch_percent) : ''} ${item.message_count ? '&middot; ' + item.message_count + ' msgs' : ''} ${item.synced_at ? '&middot; Collected at ' + new Date(item.synced_at).toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'}) : ''}</div>
-                            <div class="messages-container" style="display:none"></div>
-                        </div>`;
-                    }).join('')}
-                </div>
-            `).join('');
-        }
+        });
 
-        function renderList(data) {
-            if (!data.length) return '<div class="empty">No data</div>';
-            return data.map((item, idx) => {
-                // Find best title: first string field with content
-                const title = item.title || item.channel || item.name || Object.values(item).find(v => typeof v === 'string' && v.length > 0) || '?';
-                // Find best meta: any numeric field (count, watch_count, etc.)
-                const numFields = Object.entries(item).filter(([k,v]) => typeof v === 'number' && k !== 'id');
-                const meta = numFields.length > 0 ? numFields.map(([k,v]) => v + ' ' + k.replace(/_/g,' ')).join(' · ') : (item.subtitle || '');
-                return `
-                <div class="timeline-item" style="display:flex;justify-content:space-between;align-items:center">
-                    <div class="item-title">${idx+1}. ${esc(title)}</div>
-                    <div class="item-meta" style="white-space:nowrap">${esc(meta)}</div>
-                </div>`;
-            }).join('');
-        }
+        // Load data on start
+        loadStats();
+        loadTimeline();
+        loadSources();
+        loadSettings();
 
-        function renderProgressList(data) {
-            if (!data.length) return '<div class="empty">All caught up!</div>';
-            return data.map(item => `
-                <div class="progress-item">
-                    <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${item.watch_percent || item.percent || 0}%"></div></div>
-                    <span class="pct">${item.watch_percent || item.percent || 0}%</span>
-                    <span class="item-title">${esc(item.title || '')}</span>
-                    ${item.video_id ? `<button class="btn-sm btn-dismiss" onclick="dismissVideo('${esc(item.video_id)}', this)">✕</button>` : ''}
-                </div>
-            `).join('');
-        }
-        async function dismissVideo(videoId, btn) {
-            btn.disabled = true;
-            btn.textContent = '...';
+        async function loadStats() {
             try {
-                await fetch('/api/skills/youtube_history/dismiss/unfinished_video/' + videoId, {method:'POST'});
-                btn.closest('.progress-item').style.opacity = '0.3';
-                setTimeout(() => btn.closest('.progress-item').remove(), 500);
-            } catch(e) { btn.textContent = '✕'; btn.disabled = false; }
-        }
-
-        function renderGrid(data) {
-            if (!data.length) return '<div class="empty">No data</div>';
-            return `<div class="thumb-grid">${data.map(item => `
-                <div class="thumb-item">${esc(item.title || '')}</div>
-            `).join('')}</div>`;
-        }
-
-        function renderTable(data) {
-            if (!data.length) return '<div class="empty">No data</div>';
-            const cols = Object.keys(data[0]);
-            return `<table class="data-table"><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${data.map(row => `<tr>${cols.map(c => `<td>${esc(String(row[c] || ''))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-        }
-
-        function renderConversation(data) {
-            if (!data.length) return '<div class="empty">No messages</div>';
-            return data.map(msg => `
-                <div class="conv-msg ${msg.role}">
-                    <div class="role-label">${msg.role === 'user' ? 'You' : 'AI'}</div>
-                    <div class="msg-content">${esc(msg.content || '')}</div>
-                    ${msg.thinking_block ? `<details class="thinking"><summary>Thinking</summary><pre>${esc(msg.thinking_block)}</pre></details>` : ''}
-                    ${msg.sources ? `<div class="sources">Sources: ${msg.sources}</div>` : ''}
-                    ${msg.code_blocks ? `<details class="code-detail"><summary>Code</summary><pre>${esc(msg.code_blocks)}</pre></details>` : ''}
-                </div>
-            `).join('');
-        }
-        async function toggleMessages(skillName, convId, el) {
-            const container = el.querySelector('.messages-container');
-            if (!container) return;
-            if (container.style.display !== 'none') {
-                container.style.display = 'none';
-                return;
-            }
-            container.innerHTML = '<div class="empty">Loading...</div>';
-            container.style.display = 'block';
-            try {
-                const r = await fetch('/api/skills/' + skillName + '/conversations/' + convId + '/messages');
-                const data = await r.json();
-                if (data.messages && data.messages.length > 0) {
-                    container.innerHTML = renderConversation(data.messages);
-                } else {
-                    container.innerHTML = '<div class="empty">No messages collected yet</div>';
-                }
+                const resp = await fetch('/api/stats');
+                const data = await resp.json();
+                document.getElementById('stats-bar').innerHTML = `
+                    <div class="stat-card"><div class="number">${data.total_conversations}</div><div class="label">Conversations</div></div>
+                    <div class="stat-card"><div class="number">${data.total_messages}</div><div class="label">Messages</div></div>
+                    <div class="stat-card"><div class="number">${data.total_videos}</div><div class="label">Videos</div></div>
+                    <div class="stat-card"><div class="number">${data.total_artifacts}</div><div class="label">Artifacts</div></div>
+                `;
+                document.getElementById('status-text').textContent = `${data.sources.length} sources active`;
+                document.getElementById('status-text').style.color = '#22c55e';
             } catch(e) {
-                container.innerHTML = '<div class="empty">Error loading messages</div>';
+                document.getElementById('status-text').textContent = 'Error loading stats';
+                document.getElementById('status-text').style.color = '#ef4444';
             }
         }
 
-        function renderByType(displayType, data) {
-            switch (displayType) {
-                case 'stat_cards': return renderStatCards(data);
-                case 'timeline': return renderTimeline(data);
-                case 'list': return renderList(data);
-                case 'progress_list': return renderProgressList(data);
-                case 'grid': return renderGrid(data);
-                case 'table': return renderTable(data);
-                case 'conversation': return renderConversation(data);
-                case 'search': return renderTable(data); // search sections use table layout
-                default: return `<div class="empty">Unknown display type: ${displayType}</div>`;
-            }
-        }
-
-        // ============================================================
-        // Home Page
-        // ============================================================
-        async function renderHome() {
-            const el = document.getElementById('page-content');
-
-            // Check if any skills need sign-in
-            let wizardHtml = '';
+        async function loadTimeline() {
             try {
-                const provResp = await fetch('/api/auth_providers');
-                const providers = await provResp.json();
-                const needsSignIn = providers.some(p => !p.all_logged_in);
-                if (needsSignIn) {
-                    let steps = '';
-                    let num = 1;
-                    for (const p of providers) {
-                        const done = p.all_logged_in;
-                        const skillNames = p.skills.map(s => s.name.replace('_', ' ')).join(', ');
-                        steps += `<div class="wizard-step ${done ? 'done' : ''}">
-                            <div class="step-num">${done ? '&#10003;' : num}</div>
-                            <div class="step-info"><h4>Sign into ${esc(p.provider.charAt(0).toUpperCase() + p.provider.slice(1))}</h4><p>Covers: ${esc(skillNames)}</p></div>
-                            ${done ? '' : `<button class="btn primary" onclick="doSignIn('${p.skills[0].name}','${p.provider}')">Sign In</button>`}
-                        </div>`;
-                        num++;
-                    }
-                    wizardHtml = `<div class="card" style="border-color:#7c3aed44;margin-bottom:24px">
-                        <h3 style="margin-bottom:12px">Set Up Your Sources</h3>
-                        <p style="font-size:13px;color:#888;margin-bottom:16px">Sign into the services you want Memory Tap to collect from.<br>
-                        Each sign-in opens in the Memory Tap Chrome window. <strong>Sign in there, then come back here and click "I'm Done Signing In".</strong></p>
-                        ${steps}
-                    </div>`;
-                }
-            } catch(e) {}
-
-            // Load widgets
-            let widgetHtml = '<div class="loading">Loading widgets...</div>';
-            try {
-                const wResp = await fetch('/api/widgets');
-                const widgets = await wResp.json();
-                if (widgets.length === 0) {
-                    widgetHtml = '<div class="empty">No widgets yet. Skills will appear here once installed.</div>';
-                } else {
-                    let cards = '';
-                    for (const w of widgets) {
-                        if (w.visible === 0) continue; // respect widget config visibility
-                        const wid = 'widget-' + w.skill_name + '-' + w.name;
-                        cards += `<div class="widget ${w.size}" id="${wid}">
-                            <div class="widget-header">
-                                <div class="widget-title">
-                                    <span class="skill-link" onclick="event.stopPropagation();navigate('skill','${esc(w.skill_name)}')">${esc(w.skill_name.replace(/_/g,' '))}</span>
-                                     &middot; ${esc(w.title)}
-                                </div>
-                                <div class="widget-meta">
-                                    <span class="widget-updated" id="${wid}-time"></span>
-                                    <button class="widget-refresh" title="Refresh" onclick="event.stopPropagation();refreshWidget('${esc(w.skill_name)}','${esc(w.name)}')">&#8635;</button>
-                                </div>
-                            </div>
-                            <div class="widget-data loading" onclick="navigate('skill','${esc(w.skill_name)}')">Loading...</div>
-                        </div>`;
-                    }
-                    widgetHtml = `<div class="home-toolbar">
-                        <h2>Dashboard</h2>
-                        <button class="btn" onclick="showCustomize()">Customize</button>
-                    </div>
-                    <div class="widget-grid">${cards}</div>`;
-                    // Load widget data async
-                    setTimeout(() => loadWidgetData(widgets), 100);
-                }
-            } catch(e) { widgetHtml = '<div class="empty">Failed to load widgets</div>'; }
-
-            el.innerHTML = wizardHtml + widgetHtml;
-        }
-
-        // Track when each widget was last loaded
-        const widgetLoadTimes = {};
-
-        async function loadWidgetData(widgets) {
-            for (const w of widgets) {
-                if (w.visible === 0) continue;
-                try {
-                    const resp = await fetch(`/api/widgets/${w.skill_name}/${w.name}/data`);
-                    const result = await resp.json();
-                    const wid = 'widget-' + w.skill_name + '-' + w.name;
-                    const el = document.querySelector(`#${wid} .widget-data`);
-                    if (el && result.data) {
-                        _timelineSkill = w.skill_name;
-                        el.innerHTML = renderByType(result.display_type, result.data);
-                        _timelineSkill = '';
-                        el.classList.remove('loading');
-                        widgetLoadTimes[wid] = new Date().toISOString();
-                        updateWidgetTime(wid);
-                    }
-                } catch(e) {}
-            }
-        }
-
-        function updateWidgetTime(wid) {
-            const timeEl = document.getElementById(wid + '-time');
-            const loadTime = widgetLoadTimes[wid];
-            if (timeEl && loadTime) {
-                timeEl.textContent = 'Updated ' + timeAgo(loadTime);
-            }
-        }
-
-        // Refresh a single widget's data
-        async function refreshWidget(skillName, widgetName) {
-            const wid = 'widget-' + skillName + '-' + widgetName;
-            const el = document.querySelector(`#${wid} .widget-data`);
-            const btn = document.querySelector(`#${wid} .widget-refresh`);
-            if (btn) { btn.style.animation = 'spin 0.5s linear'; }
-            if (el) el.innerHTML = '<div class="loading" style="padding:10px">Refreshing...</div>';
-            try {
-                const resp = await fetch(`/api/widgets/${skillName}/${widgetName}/data`);
-                const result = await resp.json();
-                if (el && result.data) {
-                    el.innerHTML = renderByType(result.display_type, result.data);
-                    widgetLoadTimes[wid] = new Date().toISOString();
-                    updateWidgetTime(wid);
-                }
-            } catch(e) {
-                if (el) el.innerHTML = '<div class="empty">Refresh failed</div>';
-            }
-            if (btn) { btn.style.animation = ''; }
-        }
-
-        // Update all widget timestamps every 30s
-        setInterval(() => {
-            for (const wid of Object.keys(widgetLoadTimes)) {
-                updateWidgetTime(wid);
-            }
-        }, 30000);
-
-        // ============================================================
-        // Customize Widgets Modal (#16)
-        // ============================================================
-        async function showCustomize() {
-            try {
-                const resp = await fetch('/api/widgets/config');
-                const widgets = await resp.json();
-
-                let items = '';
-                widgets.forEach((w, i) => {
-                    const label = w.title || w.widget_name.replace(/_/g, ' ');
-                    const skill = w.skill_name.replace(/_/g, ' ');
-                    items += `<div class="customize-item" data-skill="${esc(w.skill_name)}" data-widget="${esc(w.widget_name)}">
-                        <span class="drag-handle">&#9776;</span>
-                        <input type="checkbox" id="cw-${i}" ${w.enabled ? 'checked' : ''}>
-                        <label for="cw-${i}">${esc(skill)} &mdash; ${esc(label)}</label>
-                    </div>`;
-                });
-
-                const overlay = document.createElement('div');
-                overlay.className = 'customize-overlay';
-                overlay.id = 'customize-modal';
-                overlay.innerHTML = `<div class="customize-box">
-                    <h3>Customize Widgets</h3>
-                    <p style="font-size:13px;color:#888;margin-bottom:16px">Toggle widgets on/off. All widgets are shown by default.</p>
-                    <div id="customize-list">${items}</div>
-                    <div class="customize-actions">
-                        <button class="btn" onclick="closeCustomize()">Cancel</button>
-                        <button class="btn primary" onclick="saveCustomize()">Save</button>
-                    </div>
-                </div>`;
-                document.body.appendChild(overlay);
-                overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCustomize(); });
-            } catch(e) {
-                alert('Failed to load widget config');
-            }
-        }
-
-        function closeCustomize() {
-            const modal = document.getElementById('customize-modal');
-            if (modal) modal.remove();
-        }
-
-        async function saveCustomize() {
-            const items = document.querySelectorAll('#customize-list .customize-item');
-            const widgets = [];
-            items.forEach((item, i) => {
-                widgets.push({
-                    skill_name: item.dataset.skill,
-                    widget_name: item.dataset.widget,
-                    enabled: item.querySelector('input[type="checkbox"]').checked ? 1 : 0,
-                    position: i,
-                });
-            });
-            try {
-                await fetch('/api/widgets/config', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({widgets}),
-                });
-                closeCustomize();
-                renderHome(); // Refresh home page to reflect changes
-            } catch(e) {
-                alert('Failed to save');
-            }
-        }
-
-        async function doSignIn(skillName, provider) {
-            const resp = await fetch(`/api/skills/${skillName}/login`, { method: 'POST' });
-            // Show "Done" button instead of auto-polling
-            const wizard = document.querySelector('.wizard-step:not(.done) .btn.primary');
-            if (wizard) {
-                wizard.textContent = 'I\'m Done Signing In';
-                wizard.onclick = () => checkSignIn(skillName, provider);
-            }
-        }
-
-        async function checkSignIn(skillName, provider) {
-            const btn = document.querySelector('.wizard-step:not(.done) .btn.primary');
-            if (btn) { btn.textContent = 'Checking...'; btn.disabled = true; }
-            try {
-                const r = await fetch(`/api/skills/${skillName}/check_login`, { method: 'POST' });
-                const d = await r.json();
-                if (d.logged_in) {
-                    renderHome();
-                } else {
-                    if (btn) { btn.textContent = 'Not signed in yet — try again'; btn.disabled = false; btn.onclick = () => checkSignIn(skillName, provider); }
-                }
-            } catch(e) {
-                if (btn) { btn.textContent = 'Check failed — try again'; btn.disabled = false; }
-            }
-        }
-
-        // ============================================================
-        // Skill Page
-        // ============================================================
-        async function renderSkillPage(skillName) {
-            const el = document.getElementById('page-content');
-            el.innerHTML = '<div class="loading">Loading skill page...</div>';
-
-            try {
-                const [pageResp, infoResp, statsResp] = await Promise.all([
-                    fetch(`/api/skills/${skillName}/page`),
-                    fetch(`/api/skills/${skillName}`),
-                    fetch(`/api/skills/${skillName}/stats`),
-                ]);
-                const page = await pageResp.json();
-                const info = await infoResp.json();
-                let stats = null;
-                try { stats = await statsResp.json(); } catch(e) {}
-
-                let html = `<div class="back-btn" onclick="navigate('home')">&larr; Back</div>`;
-                const displayName = (info.name || skillName).replace(/_/g, ' ');
-                html += `<h2 style="margin-bottom:6px">${esc(displayName)}</h2>`;
-                // Skill metadata line
-                if (info.version || info.last_sync_at) {
-                    html += `<div style="font-size:12px;color:#666;margin-bottom:16px">`;
-                    if (info.version) html += `v${esc(info.version)}`;
-                    if (info.last_sync_at) html += ` &middot; Last sync: ${timeAgo(info.last_sync_at)}`;
-                    if (info.login_status) {
-                        const color = info.login_status === 'logged_in' ? '#22c55e' : '#ef4444';
-                        html += ` &middot; <span style="color:${color}">${esc(info.login_status)}</span>`;
-                    }
-                    html += `</div>`;
-                }
-
-                // Stat cards at the top (#15)
-                if (stats && Array.isArray(stats) && stats.length > 0) {
-                    html += renderStatCards(stats);
-                }
-
-                // Render each section defined by the skill's UI manifest
-                for (const section of page.sections.sort((a,b) => a.position - b.position)) {
-                    html += `<div class="section">
-                        <div class="section-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-                            <h3>${esc(section.title)}</h3>
-                            ${section.collapsible ? '<span class="toggle">&#9660;</span>' : ''}
-                        </div>
-                        <div class="section-content" id="section-${section.name}">
-                            <div class="loading">Loading...</div>
-                        </div>
-                    </div>`;
-                }
-
-                // Search section at the bottom
-                html += `<div class="section">
-                    <h3 style="margin-bottom:12px">Search</h3>
-                    <div class="search-box">
-                        <input type="text" id="skill-search-input" placeholder="Search ${esc(skillName.replace(/_/g,' '))} data..." onkeydown="if(event.key==='Enter')doSkillSearch('${esc(skillName)}')">
-                        <button class="btn primary" onclick="doSkillSearch('${esc(skillName)}')">Search</button>
-                    </div>
-                    <div id="skill-search-results"></div>
-                </div>`;
-
-                el.innerHTML = html;
-
-                // Load section data (each section rendered by its display_type)
-                const sectionPromises = page.sections.map(s => loadSectionData(skillName, s));
-                await Promise.all(sectionPromises);
-
-                // Auto-scroll + auto-expand if navigated with a conversation ID
-                if (_pendingConvId) {
-                    const targetEl = document.querySelector(`[data-conv-id="${_pendingConvId}"]`);
-                    if (targetEl) {
-                        targetEl.scrollIntoView({behavior: 'smooth', block: 'center'});
-                        // Auto-expand messages
-                        const toggleBtn = targetEl.querySelector('.messages-container') || targetEl;
-                        toggleMessages(skillName, _pendingConvId, targetEl);
-                    }
-                    _pendingConvId = null;
-                }
-            } catch(e) {
-                el.innerHTML = `<div class="back-btn" onclick="navigate('home')">&larr; Back</div><div class="empty">Failed to load skill page: ${e}</div>`;
-            }
-        }
-
-        async function loadSectionData(skillName, section, page = 1) {
-            try {
-                const resp = await fetch(`/api/skills/${skillName}/sections/${section.name}/data?page=${page}`);
-                const result = await resp.json();
-                const el = document.getElementById(`section-${section.name}`);
-                if (el && result.data) {
-                    // Tag each data item with the skill name for conversation toggles
-                    if (Array.isArray(result.data)) {
-                        result.data.forEach(item => { item._skill = skillName; });
-                    }
-                    let html = renderByType(result.display_type, result.data);
-                    if (section.paginated && result.data.length >= section.page_size) {
-                        html += `<div style="text-align:center;margin-top:12px"><button class="btn" onclick="loadSectionData('${skillName}',${JSON.stringify(section)},${page+1})">Load more</button></div>`;
-                    }
-                    if (page > 1) el.innerHTML += html;
-                    else el.innerHTML = html;
-                }
-            } catch(e) {}
-        }
-
-        async function doSkillSearch(skillName) {
-            const q = document.getElementById('skill-search-input').value.trim();
-            if (!q) return;
-            const resp = await fetch(`/api/skills/${skillName}/search?q=${encodeURIComponent(q)}`);
-            const results = await resp.json();
-            const el = document.getElementById('skill-search-results');
-            if (!results.length) { el.innerHTML = '<div class="empty">No results</div>'; return; }
-            el.innerHTML = results.map(r => `
-                <div class="search-result">
-                    <div class="sr-title">${esc(r.title || '')}</div>
-                    <div class="sr-snippet">${esc(r.snippet || '')}</div>
-                </div>
-            `).join('');
-        }
-
-        // ============================================================
-        // Search & Chat Page
-        // ============================================================
-        let chatHistory = [];  // Client-side chat history [{role, content}, ...]
-        let chatBusy = false;
-
-        function renderSearchChat() {
-            const el = document.getElementById('page-content');
-            el.innerHTML = `
-                <h2 style="margin-bottom:16px">Search &amp; Chat</h2>
-                <div class="search-chat-tabs">
-                    <button class="search-chat-tab active" onclick="switchSCTab('search',this)">Search</button>
-                    <button class="search-chat-tab" onclick="switchSCTab('chat',this)">Chat with your data</button>
-                </div>
-
-                <!-- Search Panel -->
-                <div id="sc-search" class="sc-panel active">
-                    <div class="search-box">
-                        <input type="text" id="rag-search-input" placeholder="Search across YouTube, ChatGPT, Gemini..." onkeydown="if(event.key==='Enter')doRagSearch()">
-                        <button class="btn primary" onclick="doRagSearch()">Search</button>
-                    </div>
-                    <div id="rag-search-results"></div>
-                </div>
-
-                <!-- Chat Panel -->
-                <div id="sc-chat" class="sc-panel">
-                    <div class="chat-container">
-                        <div class="chat-messages" id="chat-messages">
-                            <div class="empty">Ask anything about your collected data. Memory Tap will search your YouTube history, ChatGPT conversations, and Gemini conversations to answer.</div>
-                        </div>
-                        <div id="chat-typing" class="chat-typing" style="display:none">Thinking...</div>
-                        <div class="chat-input-row">
-                            <input type="text" id="chat-input" placeholder="Ask about your data..." onkeydown="if(event.key==='Enter'&&!event.shiftKey)sendChat()">
-                            <button class="btn primary" id="chat-send-btn" onclick="sendChat()">Send</button>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-
-        function switchSCTab(tab, btn) {
-            document.querySelectorAll('.search-chat-tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.sc-panel').forEach(p => p.classList.remove('active'));
-            btn.classList.add('active');
-            document.getElementById('sc-' + tab).classList.add('active');
-        }
-
-        async function doRagSearch() {
-            const q = document.getElementById('rag-search-input').value.trim();
-            if (!q) return;
-            const el = document.getElementById('rag-search-results');
-            el.innerHTML = '<div class="loading">Searching...</div>';
-            try {
-                const resp = await fetch('/api/rag/search?q=' + encodeURIComponent(q) + '&limit=30');
-                const results = await resp.json();
-                if (!results.length) {
-                    el.innerHTML = '<div class="empty">No results found</div>';
+                const resp = await fetch('/api/timeline?days=14');
+                const days = await resp.json();
+                if (days.length === 0) {
+                    document.getElementById('timeline-content').innerHTML =
+                        '<div class="loading">No data collected yet. Enable some sources to get started!</div>';
                     return;
                 }
-                el.innerHTML = results.map(r => {
-                    const sourceName = r.source === 'youtube_history' ? 'YouTube' :
-                                       r.source === 'chatgpt_history' ? 'ChatGPT' : 'Gemini';
-                    return '<div class="search-result">' +
-                        '<span class="sr-source ' + esc(r.source) + '">' + sourceName + '</span>' +
-                        '<span class="sr-title">' + esc(r.title || '') + '</span>' +
-                        (r.channel ? ' <span style="color:#666;font-size:12px">' + esc(r.channel) + '</span>' : '') +
-                        (r.date ? ' <span style="color:#555;font-size:11px">' + esc(r.date) + '</span>' : '') +
-                        (r.url ? ' <a href="' + esc(r.url) + '" target="_blank" style="font-size:11px">open</a>' : '') +
-                        '<div class="sr-snippet">' + esc(r.snippet || '') + '</div>' +
-                    '</div>';
-                }).join('');
-            } catch(e) {
-                el.innerHTML = '<div class="empty">Search failed: ' + esc(String(e)) + '</div>';
-            }
-        }
-
-        async function sendChat() {
-            if (chatBusy) return;
-            const input = document.getElementById('chat-input');
-            const message = input.value.trim();
-            if (!message) return;
-
-            input.value = '';
-            chatBusy = true;
-            document.getElementById('chat-send-btn').disabled = true;
-
-            const messagesEl = document.getElementById('chat-messages');
-
-            // Clear placeholder if first message
-            if (chatHistory.length === 0) {
-                messagesEl.innerHTML = '';
-            }
-
-            // Add user message to display
-            messagesEl.innerHTML += '<div class="chat-msg user"><div class="msg-role">You</div>' + esc(message) + '</div>';
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-
-            // Show typing indicator
-            document.getElementById('chat-typing').style.display = 'block';
-
-            try {
-                const resp = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        message: message,
-                        history: chatHistory,
-                    }),
-                });
-                const data = await resp.json();
-
-                document.getElementById('chat-typing').style.display = 'none';
-
-                // Build sources HTML
-                let sourcesHtml = '';
-                if (data.sources && data.sources.length > 0) {
-                    sourcesHtml = '<div class="chat-sources"><span style="font-size:11px;color:#666">Sources used: </span>';
-                    for (const s of data.sources) {
-                        const cls = s.source === 'youtube_history' ? 'youtube' :
-                                    s.source === 'chatgpt_history' ? 'chatgpt' : 'gemini';
-                        const label = s.source === 'youtube_history' ? 'YouTube' :
-                                      s.source === 'chatgpt_history' ? 'ChatGPT' : 'Gemini';
-                        const link = s.url ? '<a href="' + esc(s.url) + '" target="_blank">' + esc(s.title || label) + '</a>' : esc(s.title || label);
-                        sourcesHtml += '<span class="source-tag ' + cls + '">' + link + '</span>';
+                let html = '';
+                for (const day of days) {
+                    html += `<div class="timeline-day"><div class="timeline-date">${formatDate(day.date)}</div>`;
+                    for (const c of day.conversations) {
+                        const badge = c.source.includes('chatgpt') ? 'chatgpt' :
+                                     c.source.includes('gemini') ? 'gemini' : 'sync';
+                        html += `<div class="timeline-item">
+                            <span class="source-badge badge-${badge}">${c.source}</span>
+                            <span class="title">${esc(c.title)}</span>
+                            <div class="meta">${c.message_count} messages</div>
+                        </div>`;
                     }
-                    sourcesHtml += '</div>';
+                    for (const v of day.videos) {
+                        html += `<div class="timeline-item">
+                            <span class="source-badge badge-youtube">YouTube</span>
+                            <span class="title">${esc(v.title)}</span>
+                            <div class="meta">${esc(v.channel || '')} ${v.watched_at ? '&middot; ' + v.watched_at : ''}</div>
+                        </div>`;
+                    }
+                    if (day.sync_runs.length > 0 && day.conversations.length === 0 && day.videos.length === 0) {
+                        for (const s of day.sync_runs) {
+                            html += `<div class="timeline-item">
+                                <span class="source-badge badge-sync">sync</span>
+                                <span class="title">${s.source}: ${s.status}</span>
+                                <div class="meta">${s.items_found} found, ${s.items_new} new${s.error ? ' &middot; Error: ' + esc(s.error) : ''}</div>
+                            </div>`;
+                        }
+                    }
+                    html += '</div>';
                 }
-
-                // Add assistant message
-                messagesEl.innerHTML += '<div class="chat-msg assistant"><div class="msg-role">Memory Tap</div>' + esc(data.response || 'No response') + sourcesHtml + '</div>';
-                messagesEl.scrollTop = messagesEl.scrollHeight;
-
-                // Update history
-                chatHistory.push({role: 'user', content: message});
-                chatHistory.push({role: 'assistant', content: data.response || ''});
-
+                document.getElementById('timeline-content').innerHTML = html;
             } catch(e) {
-                document.getElementById('chat-typing').style.display = 'none';
-                messagesEl.innerHTML += '<div class="chat-msg assistant"><div class="msg-role">Memory Tap</div>Error: ' + esc(String(e)) + '</div>';
+                document.getElementById('timeline-content').innerHTML =
+                    '<div class="loading">Failed to load timeline</div>';
             }
-
-            chatBusy = false;
-            document.getElementById('chat-send-btn').disabled = false;
-            input.focus();
         }
 
-        // ============================================================
-        // Settings Page
-        // ============================================================
-        async function renderSettings() {
-            const el = document.getElementById('page-content');
-            el.innerHTML = '<div class="loading">Loading settings...</div>';
-
-            const [settingsResp, skillsResp, healthResp] = await Promise.all([
-                fetch('/api/settings'),
-                fetch('/api/skills'),
-                fetch('/api/system/health'),
-            ]);
-            const settings = await settingsResp.json();
-            const skills = await skillsResp.json();
-            const health = await healthResp.json();
-
-            let html = '<h2 style="margin-bottom:20px">Settings</h2>';
-
-            // LLM Settings
-            html += `<div class="card">
-                <h3 style="margin-bottom:12px">LLM Configuration</h3>
-                <div class="setting-row"><label>Provider</label><select id="s-provider"><option value="gemini-2.5-flash">Gemini 2.5 Flash</option></select></div>
-                <div class="setting-row"><label>API Key</label><input type="password" id="s-apikey" placeholder="${esc(settings.api_key_masked || 'sk-or-...')}"></div>
-                <div style="margin-top:12px"><button class="btn primary" onclick="saveSettings()">Save</button> <button class="btn" onclick="checkUpdates()">Check for Skill Updates</button></div>
-            </div>`;
-
-            // Skills
-            html += '<div class="card"><h3 style="margin-bottom:12px">Installed Skills</h3>';
-            if (skills.length === 0) {
-                html += '<div class="empty">No skills installed</div>';
-            } else {
-                for (const s of skills) {
-                    const color = s.login_status === 'logged_in' ? 'green' : s.login_status === 'not_logged_in' ? 'red' : 'yellow';
+        async function loadSources() {
+            try {
+                const resp = await fetch('/api/sources');
+                const sources = await resp.json();
+                if (sources.length === 0) {
+                    document.getElementById('sources-list').innerHTML =
+                        '<div class="loading">No skills installed yet. Skills will auto-download from GitHub.</div>';
+                    return;
+                }
+                let html = '';
+                for (const s of sources) {
+                    const statusColor = s.login_status === 'logged_in' ? 'green' :
+                                       s.login_status === 'not_logged_in' ? 'red' : 'yellow';
                     const lastSync = s.last_sync_at ? timeAgo(s.last_sync_at) : 'Never';
-                    const schedHours = s.schedule_hours || 3;
-                    html += `<div class="skill-card">
-                        <div class="skill-info">
-                            <h4 onclick="navigate('skill','${esc(s.name)}')" style="cursor:pointer;color:#7c3aed">${esc(s.name)}</h4>
-                            <div class="skill-meta"><span class="status-dot ${color}"></span>${s.login_status} &middot; v${esc(s.version)} &middot; Last: ${lastSync}${s.last_error ? ' &middot; <span style="color:#ef4444">'+esc(s.last_error).substring(0,60)+'</span>' : ''}</div>
+                    html += `<div class="source-card">
+                        <div class="source-info">
+                            <h3>${esc(s.name)}</h3>
+                            <div class="status">
+                                <span class="status-dot ${statusColor}"></span>
+                                ${s.login_status} &middot; Last sync: ${lastSync}
+                                ${s.last_error ? '<br><span style="color:#ef4444">Error: ' + esc(s.last_error) + '</span>' : ''}
+                            </div>
                         </div>
-                        <div style="display:flex;gap:6px;align-items:center">
-                            <select onchange="setSchedule('${esc(s.name)}',this.value)" style="background:#222;color:#ccc;border:1px solid #444;border-radius:4px;padding:4px;font-size:12px">
-                                <option value="0.083" ${schedHours<0.1?'selected':''}>5 min</option>
-                                <option value="0.167" ${schedHours>=0.1&&schedHours<0.2?'selected':''}>10 min</option>
-                                <option value="0.5" ${schedHours>=0.4&&schedHours<0.6?'selected':''}>30 min</option>
-                                <option value="1" ${schedHours>=0.9&&schedHours<1.5?'selected':''}>1 hr</option>
-                                <option value="3" ${schedHours>=2&&schedHours<4?'selected':''}>3 hr</option>
-                                <option value="6" ${schedHours>=5&&schedHours<8?'selected':''}>6 hr</option>
-                                <option value="12" ${schedHours>=10&&schedHours<15?'selected':''}>12 hr</option>
-                                <option value="24" ${schedHours>=20?'selected':''}>24 hr</option>
-                            </select>
-                            <button class="btn" onclick="toggleSkill('${esc(s.name)}')">${s.enabled ? 'Disable' : 'Enable'}</button>
-                            <button class="btn primary" onclick="runSkill('${esc(s.name)}')">Run</button>
+                        <div class="source-actions">
+                            <button class="btn" onclick="toggleSource('${s.name}')">${s.enabled ? 'Disable' : 'Enable'}</button>
+                            <button class="btn" onclick="loginSource('${s.name}')">Login</button>
+                            <button class="btn primary" onclick="runSource('${s.name}')">Run Now</button>
                         </div>
-                        <div id="skill-settings-${esc(s.name)}" class="skill-settings-container"></div>
                     </div>`;
                 }
-            }
-            html += '</div>';
-
-            // System Health
-            html += `<div class="card"><h3 style="margin-bottom:12px">System</h3>
-                <div style="font-size:13px;color:#888">
-                    Chrome: ${health.chrome_running ? '<span style="color:#22c55e">running</span>' : '<span style="color:#ef4444">stopped</span>'}
-                    ${health.chrome_port ? ' (port ' + health.chrome_port + ')' : ''}
-                    ${health.chrome_pid ? ' PID ' + health.chrome_pid : ''}<br>
-                    Skills loaded: ${health.skills_loaded}<br>
-                    ${health.db_sizes.length ? 'DBs: ' + health.db_sizes.map(d => d.name + ' (' + d.size_mb + ' MB)').join(', ') : ''}
-                </div>
-            </div>`;
-
-            el.innerHTML = html;
-
-            // Load skill-specific settings after DOM is rendered
-            for (const s of skills) {
-                loadSkillSettings(s.name);
+                document.getElementById('sources-list').innerHTML = html;
+            } catch(e) {
+                document.getElementById('sources-list').innerHTML =
+                    '<div class="loading">Failed to load sources</div>';
             }
         }
 
-        async function setSchedule(name, hours) {
-            await fetch(`/api/skills/${name}/schedule`, {
-                method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({schedule_hours: parseFloat(hours)})
-            });
-        }
-
-        async function loadSkillSettings(skillName) {
+        async function loadSettings() {
             try {
-                const res = await fetch(`/api/skills/${skillName}/skill-settings`);
-                const settings = await res.json();
-                if (!settings || !settings.length) return;
-                const container = document.getElementById(`skill-settings-${skillName}`);
-                if (!container) return;
-                let html = '<div style="display:flex;gap:8px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #333">';
-                for (const s of settings) {
-                    html += `<label style="font-size:11px;color:#888">${esc(s.label)}: </label>`;
-                    if (s.setting_type === 'select') {
-                        html += `<select onchange="setSkillSetting('${esc(skillName)}','${esc(s.key)}',this.value)" style="background:#222;color:#ccc;border:1px solid #444;border-radius:4px;padding:3px;font-size:12px">`;
-                        for (const opt of s.options) {
-                            html += `<option value="${esc(opt.value)}" ${opt.value===s.value?'selected':''}>${esc(opt.label)}</option>`;
-                        }
-                        html += '</select>';
-                    } else if (s.setting_type === 'toggle') {
-                        html += `<input type="checkbox" ${s.value==='true'?'checked':''} onchange="setSkillSetting('${esc(skillName)}','${esc(s.key)}',this.checked?'true':'false')" style="margin:0">`;
-                    } else if (s.setting_type === 'number') {
-                        html += `<input type="number" value="${esc(s.value)}" ${s.min_value!=null?'min="'+s.min_value+'"':''} ${s.max_value!=null?'max="'+s.max_value+'"':''} onchange="setSkillSetting('${esc(skillName)}','${esc(s.key)}',this.value)" style="background:#222;color:#ccc;border:1px solid #444;border-radius:4px;padding:3px;font-size:12px;width:60px">`;
-                    } else {
-                        html += `<input type="text" value="${esc(s.value)}" onchange="setSkillSetting('${esc(skillName)}','${esc(s.key)}',this.value)" style="background:#222;color:#ccc;border:1px solid #444;border-radius:4px;padding:3px;font-size:12px;width:100px">`;
-                    }
-                    if (s.description) html += `<span style="font-size:10px;color:#666">${esc(s.description)}</span>`;
+                const resp = await fetch('/api/settings');
+                const data = await resp.json();
+                // API key
+                if (data.openrouter_api_key_masked) {
+                    document.getElementById('openrouter-api-key').placeholder = data.openrouter_api_key_masked;
                 }
-                html += '</div>';
-                container.innerHTML = html;
-            } catch(e) { /* skill has no settings */ }
-        }
-
-        async function setSkillSetting(skillName, key, value) {
-            const body = {};
-            body[key] = value;
-            await fetch(`/api/skills/${skillName}/skill-settings`, {
-                method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify(body)
-            });
+                // Model dropdowns
+                if (data.interest_timeline_model) {
+                    document.getElementById('interest-timeline-model').value = data.interest_timeline_model;
+                }
+                if (data.garbage_detection_model) {
+                    document.getElementById('garbage-detection-model').value = data.garbage_detection_model;
+                }
+            } catch(e) {}
         }
 
         async function saveSettings() {
-            const body = { llm_provider: document.getElementById('s-provider').value };
-            const key = document.getElementById('s-apikey').value;
-            if (key) body.api_key = key;
-            await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-            alert('Saved');
+            const apiKey = document.getElementById('openrouter-api-key').value;
+            const interestModel = document.getElementById('interest-timeline-model').value;
+            const garbageModel = document.getElementById('garbage-detection-model').value;
+            const body = {
+                interest_timeline_model: interestModel,
+                garbage_detection_model: garbageModel,
+            };
+            if (apiKey) body.openrouter_api_key = apiKey;
+            await fetch('/api/settings', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(body),
+            });
+            const status = document.getElementById('settings-status');
+            status.textContent = 'Saved!';
+            status.style.color = '#22c55e';
+            setTimeout(() => { status.textContent = ''; }, 3000);
+            document.getElementById('openrouter-api-key').value = '';
+            loadSettings();
         }
 
-        async function toggleSkill(name) {
-            await fetch(`/api/skills/${name}/toggle`, { method: 'POST' });
-            renderSettings();
+        async function toggleSource(name) {
+            await fetch(`/api/sources/${name}/toggle`, { method: 'POST' });
+            loadSources();
         }
 
-        async function runSkill(name) {
-            event.target.textContent = '...';
-            event.target.disabled = true;
+        async function loginSource(name) {
+            const resp = await fetch(`/api/sources/${name}/login`, { method: 'POST' });
+            const data = await resp.json();
+            if (data.url) alert('Chrome opened for login. Please sign in and close the tab when done.');
+        }
+
+        async function runSource(name) {
+            const btn = event.target;
+            btn.textContent = 'Running...';
+            btn.disabled = true;
             try {
-                const resp = await fetch(`/api/skills/${name}/run`, { method: 'POST' });
+                const resp = await fetch(`/api/sources/${name}/run`, { method: 'POST' });
                 const data = await resp.json();
                 if (data.error) alert('Error: ' + data.error);
-                else if (data.status === 'started') alert('Started! Running in background...');
-                else alert(`Done! ${data.items_found || 0} found, ${data.items_new || 0} new`);
-            } finally { setTimeout(renderSettings, 2000); }
+                else alert(`Done! Found ${data.items_found} items (${data.items_new} new)`);
+            } finally {
+                btn.textContent = 'Run Now';
+                btn.disabled = false;
+                loadSources();
+                loadTimeline();
+                loadStats();
+            }
         }
 
-        async function checkUpdates() {
-            const resp = await fetch('/api/skills/check_updates', { method: 'POST' });
-            const data = await resp.json();
-            alert(data.updated.length ? 'Updated: ' + data.updated.join(', ') : 'All up to date');
-            renderSettings();
+        async function doSearch() {
+            const q = document.getElementById('search-input').value.trim();
+            if (!q) return;
+            const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+            const results = await resp.json();
+            if (results.length === 0) {
+                document.getElementById('search-results').innerHTML = '<div class="loading">No results found</div>';
+                return;
+            }
+            let html = '';
+            for (const r of results) {
+                if (r.type === 'message') {
+                    const badge = r.source.includes('chatgpt') ? 'chatgpt' : r.source.includes('gemini') ? 'gemini' : 'sync';
+                    html += `<div class="search-result">
+                        <span class="source-badge badge-${badge}">${r.source}</span>
+                        <strong>${esc(r.conversation_title)}</strong> (${r.role})
+                        <div class="snippet">${esc(r.content)}</div>
+                    </div>`;
+                } else {
+                    html += `<div class="search-result">
+                        <span class="source-badge badge-youtube">YouTube</span>
+                        <strong>${esc(r.title)}</strong> &middot; ${esc(r.channel || '')}
+                        <div class="snippet">${esc(r.description || '')}</div>
+                    </div>`;
+                }
+            }
+            document.getElementById('search-results').innerHTML = html;
         }
 
-        // ============================================================
-        // Helpers
-        // ============================================================
+        document.getElementById('search-input').addEventListener('keydown', e => {
+            if (e.key === 'Enter') doSearch();
+        });
+
         function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
         function formatDate(d) {
-            if (!d || d === 'None' || d === 'null' || d === 'undefined') return 'No date';
-            // Handle both "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS" formats
-            const dateOnly = d.includes(' ') ? d.split(' ')[0] : d.includes('T') ? d.split('T')[0] : d;
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return d; // Return as-is if not a date
             const today = new Date().toISOString().slice(0,10);
             const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
-            if (dateOnly === today) return 'Today';
-            if (dateOnly === yesterday) return 'Yesterday';
-            return new Date(dateOnly+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-        }
-        function formatDuration(d, watchPercent) {
-            if (!d) return '';
-            let s = d + ' min';
-            if (watchPercent !== undefined && watchPercent !== null && watchPercent < 100) {
-                s += ' · watched ' + watchPercent + '%';
-            }
-            return s;
+            if (d === today) return 'Today';
+            if (d === yesterday) return 'Yesterday';
+            return new Date(d + 'T00:00:00').toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'});
         }
         function timeAgo(iso) {
-            if (!iso) return '';
             const ts = iso.endsWith('Z') ? iso : iso + 'Z';
             const diff = (Date.now() - new Date(ts).getTime()) / 1000;
             if (diff < 60) return 'just now';
@@ -1173,35 +437,6 @@
             if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
             return Math.floor(diff/86400) + 'd ago';
         }
-
-        // ============================================================
-        // Internet connectivity banner
-        // ============================================================
-        async function checkInternetStatus() {
-            try {
-                const resp = await fetch('/api/system/health');
-                const data = await resp.json();
-                const banner = document.getElementById('internet-banner');
-                if (data.internet === false) {
-                    banner.style.display = 'block';
-                    document.body.style.paddingTop = banner.offsetHeight + 'px';
-                } else {
-                    banner.style.display = 'none';
-                    document.body.style.paddingTop = '0';
-                }
-            } catch (e) {
-                // If dashboard API itself fails, don't show internet banner
-            }
-        }
-
-        // ============================================================
-        // Init
-        // ============================================================
-        checkConsent();
-        setInterval(loadNotifs, 15000);
-        loadNotifs();
-        checkInternetStatus();
-        setInterval(checkInternetStatus, 30000);
     </script>
 </body>
 </html>
