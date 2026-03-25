@@ -130,6 +130,14 @@ class GoogleActivitySkill(BaseSkill):
                 is_garbage      INTEGER DEFAULT 0,
                 garbage_reason  TEXT,
 
+                -- Entry tagging & classification
+                tag             TEXT,
+                channel_summary TEXT,
+                multi_session   INTEGER DEFAULT 0,
+                actual_minutes_watched REAL,
+                session_id      INTEGER,
+                time_context    TEXT,
+
                 -- Metadata
                 synced_at       TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -434,18 +442,32 @@ class GoogleActivitySkill(BaseSkill):
         next_day = (dt + timedelta(days=1)).strftime("%m/%d/%Y")
         target_fmt = dt.strftime("%m/%d/%Y")
 
-        # Step 1: Fresh tab (close current, create new)
+        # Step 1: Open a truly fresh tab (clean scroll state)
         logger.info(f"Opening fresh tab for {target_date}")
-        tab.navigate("https://myactivity.google.com")
-        for _ in range(20):
-            if (tab.js("return document.readyState") or "") == "complete":
-                break
-            time.sleep(2)
-        wait_human(3, 5)
+        from src.cdp_client import CDPClient
+        cdp = CDPClient(port=self.CDP_PORT)
+        day_tab = cdp.new_tab("https://myactivity.google.com")
+        try:
+            for _ in range(20):
+                if (day_tab.js("return document.readyState") or "") == "complete":
+                    break
+                time.sleep(2)
+            wait_human(3, 5)
 
-        # Check login
-        if not self.check_login(tab):
-            raise RuntimeError("Not logged into Google")
+            # Check login
+            if not self.check_login(day_tab):
+                raise RuntimeError("Not logged into Google")
+
+            return self._collect_one_day_inner(day_tab, conn, target_date, target_fmt, next_day)
+        finally:
+            try:
+                cdp.close_tab(day_tab)
+            except Exception:
+                pass
+
+    def _collect_one_day_inner(self, tab: CDPTab, conn, target_date: str,
+                                target_fmt: str, next_day: str) -> tuple[int, int]:
+        """Inner collection logic after tab is ready and logged in."""
 
         # Step 2: Open filter panel
         wait_human(0.5, 1.5)
@@ -500,12 +522,19 @@ class GoogleActivitySkill(BaseSkill):
     # ── Filter panel interaction ─────────────────────────────────
 
     def _mouse_click(self, tab: CDPTab, x: int, y: int) -> None:
-        """Send a mouse click at coordinates."""
+        """Send a full mouse click sequence at coordinates (move → press → release)."""
+        # Move mouse to position first
+        tab._send('Input.dispatchMouseEvent', {
+            'type': 'mouseMoved', 'x': x, 'y': y
+        })
+        time.sleep(0.05)
+        # Press
         tab._send('Input.dispatchMouseEvent', {
             'type': 'mousePressed', 'x': x, 'y': y,
             'button': 'left', 'clickCount': 1
         })
-        time.sleep(0.1)
+        time.sleep(0.05)
+        # Release
         tab._send('Input.dispatchMouseEvent', {
             'type': 'mouseReleased', 'x': x, 'y': y,
             'button': 'left', 'clickCount': 1
@@ -516,13 +545,18 @@ class GoogleActivitySkill(BaseSkill):
         tab.js('window.scrollTo(0, 0)')
         wait_human(1, 2)
 
-        for attempt in range(3):
+        for attempt in range(5):
             pos = tab.js('''
-                var all = document.querySelectorAll("*");
+                var btn = document.querySelector("button[aria-label*='Filter by date']");
+                if (btn) {
+                    var rect = btn.getBoundingClientRect();
+                    if (rect.width > 50) return JSON.stringify({x: Math.round(rect.x + rect.width/2), y: Math.round(rect.y + rect.height/2)});
+                }
+                var all = document.querySelectorAll("button");
                 for (var el of all) {
-                    if (el.textContent.trim() === "Filter by date & product" && el.children.length <= 3) {
+                    if (el.textContent.trim().startsWith("Filter by date")) {
                         var rect = el.getBoundingClientRect();
-                        if (rect.width > 100)
+                        if (rect.width > 50)
                             return JSON.stringify({x: Math.round(rect.x + rect.width/2), y: Math.round(rect.y + rect.height/2)});
                     }
                 }
