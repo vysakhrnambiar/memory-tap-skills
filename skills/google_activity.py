@@ -542,6 +542,9 @@ class GoogleActivitySkill(BaseSkill):
 
     def _open_filter_panel(self, tab: CDPTab) -> bool:
         """Open the filter panel. Returns True if opened."""
+        # Scroll down a bit then back to top — forces page to re-render filter button
+        tab.js('window.scrollTo(0, 300)')
+        wait_human(0.5, 1)
         tab.js('window.scrollTo(0, 0)')
         wait_human(1, 2)
 
@@ -580,6 +583,10 @@ class GoogleActivitySkill(BaseSkill):
                 return True
 
             logger.warning(f"Filter panel click attempt {attempt+1} failed")
+            # Scroll down then back up to re-render
+            tab.js('window.scrollTo(0, 500)')
+            wait_human(0.5, 1)
+            tab.js('window.scrollTo(0, 0)')
             wait_human(1, 2)
 
         return False
