@@ -578,6 +578,12 @@ async def get_interest_timeline():
         return {"dates_processed": [], "interests": [], "daily_insights": {}}
 
     try:
+        # Check required tables exist
+        for tbl in ("processing_log", "interest_registry", "daily_interest_log", "display_log"):
+            if not _table_exists(conn, tbl):
+                conn.close()
+                return {"dates_processed": [], "interests": [], "daily_insights": {}}
+
         # Get all processed dates
         dates_rows = conn.execute(
             "SELECT date FROM processing_log WHERE status IN ('success', 'complete') ORDER BY date"
@@ -661,6 +667,12 @@ async def get_interest_detail(interest_id: int):
         return JSONResponse({"error": "Interest timeline DB not found"}, status_code=404)
 
     try:
+        # Check required tables exist
+        for tbl in ("interest_registry", "daily_interest_log", "display_log"):
+            if not _table_exists(conn, tbl):
+                conn.close()
+                return JSONResponse({"error": "Interest data not yet available"}, status_code=404)
+
         ir = conn.execute(
             "SELECT * FROM interest_registry WHERE id = ?", (interest_id,)
         ).fetchone()

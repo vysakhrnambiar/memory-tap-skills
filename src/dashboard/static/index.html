@@ -355,12 +355,18 @@
                 garbage_detection_model: garbageModel,
             };
             if (apiKey) body.openrouter_api_key = apiKey;
-            await fetch('/api/settings', {
+            const resp = await fetch('/api/settings', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
                 body: JSON.stringify(body),
             });
             const status = document.getElementById('settings-status');
+            if (!resp.ok) {
+                status.textContent = 'Save failed!';
+                status.style.color = '#ef4444';
+                setTimeout(() => { status.textContent = ''; }, 5000);
+                return;
+            }
             status.textContent = 'Saved!';
             status.style.color = '#22c55e';
             setTimeout(() => { status.textContent = ''; }, 3000);
