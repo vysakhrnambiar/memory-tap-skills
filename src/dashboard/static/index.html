@@ -1036,6 +1036,7 @@
                             <button class="btn" onclick="toggleSkill('${esc(s.name)}')">${s.enabled ? 'Disable' : 'Enable'}</button>
                             <button class="btn primary" onclick="runSkill('${esc(s.name)}')">Run</button>
                         </div>
+                        <div id="skill-settings-${esc(s.name)}" class="skill-settings-container"></div>
                     </div>`;
                 }
             }
@@ -1053,6 +1054,11 @@
             </div>`;
 
             el.innerHTML = html;
+
+            // Load skill-specific settings after DOM is rendered
+            for (const s of skills) {
+                loadSkillSettings(s.name);
+            }
         }
 
         async function setSchedule(name, hours) {
@@ -1060,6 +1066,46 @@
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
                 body: JSON.stringify({schedule_hours: parseFloat(hours)})
+            });
+        }
+
+        async function loadSkillSettings(skillName) {
+            try {
+                const res = await fetch(`/api/skills/${skillName}/skill-settings`);
+                const settings = await res.json();
+                if (!settings || !settings.length) return;
+                const container = document.getElementById(`skill-settings-${skillName}`);
+                if (!container) return;
+                let html = '<div style="display:flex;gap:8px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid #333">';
+                for (const s of settings) {
+                    html += `<label style="font-size:11px;color:#888">${esc(s.label)}: </label>`;
+                    if (s.setting_type === 'select') {
+                        html += `<select onchange="setSkillSetting('${esc(skillName)}','${esc(s.key)}',this.value)" style="background:#222;color:#ccc;border:1px solid #444;border-radius:4px;padding:3px;font-size:12px">`;
+                        for (const opt of s.options) {
+                            html += `<option value="${esc(opt.value)}" ${opt.value===s.value?'selected':''}>${esc(opt.label)}</option>`;
+                        }
+                        html += '</select>';
+                    } else if (s.setting_type === 'toggle') {
+                        html += `<input type="checkbox" ${s.value==='true'?'checked':''} onchange="setSkillSetting('${esc(skillName)}','${esc(s.key)}',this.checked?'true':'false')" style="margin:0">`;
+                    } else if (s.setting_type === 'number') {
+                        html += `<input type="number" value="${esc(s.value)}" ${s.min_value!=null?'min="'+s.min_value+'"':''} ${s.max_value!=null?'max="'+s.max_value+'"':''} onchange="setSkillSetting('${esc(skillName)}','${esc(s.key)}',this.value)" style="background:#222;color:#ccc;border:1px solid #444;border-radius:4px;padding:3px;font-size:12px;width:60px">`;
+                    } else {
+                        html += `<input type="text" value="${esc(s.value)}" onchange="setSkillSetting('${esc(skillName)}','${esc(s.key)}',this.value)" style="background:#222;color:#ccc;border:1px solid #444;border-radius:4px;padding:3px;font-size:12px;width:100px">`;
+                    }
+                    if (s.description) html += `<span style="font-size:10px;color:#666">${esc(s.description)}</span>`;
+                }
+                html += '</div>';
+                container.innerHTML = html;
+            } catch(e) { /* skill has no settings */ }
+        }
+
+        async function setSkillSetting(skillName, key, value) {
+            const body = {};
+            body[key] = value;
+            await fetch(`/api/skills/${skillName}/skill-settings`, {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(body)
             });
         }
 

@@ -154,6 +154,88 @@ async def api_set_schedule(name: str, request: Request):
     return {"name": name, "schedule_hours": hours}
 
 
+@app.get("/api/skills/{name}/skill-settings")
+async def api_get_skill_settings(name: str):
+    """Get a skill's configurable settings with current values."""
+    if not _scheduler:
+        return JSONResponse({"error": "Not initialized"}, status_code=500)
+    skill = _scheduler._skills.get(name)
+    if not skill:
+        return JSONResponse({"error": "Skill not found"}, status_code=404)
+
+    # Get setting definitions from skill
+    settings_defs = skill.get_configurable_settings()
+    if not settings_defs:
+        return []
+
+    # Get current values from skill's DB
+    try:
+        conn = _scheduler.skill_db_mgr.get_connection(name)
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        current_values = {r["key"]: r["value"] for r in rows}
+        conn.close()
+    except Exception:
+        current_values = {}
+
+    result = []
+    for s in settings_defs:
+        result.append({
+            "key": s.key,
+            "label": s.label,
+            "setting_type": s.setting_type,
+            "default": s.default,
+            "options": s.options,
+            "description": s.description,
+            "min_value": s.min_value,
+            "max_value": s.max_value,
+            "value": current_values.get(s.key, s.default),
+        })
+    return result
+
+
+@app.post("/api/skills/{name}/skill-settings")
+async def api_set_skill_settings(name: str, request: Request):
+    """Update a skill's configurable settings."""
+    if not _scheduler:
+        return JSONResponse({"error": "Not initialized"}, status_code=500)
+    skill = _scheduler._skills.get(name)
+    if not skill:
+        return JSONResponse({"error": "Skill not found"}, status_code=404)
+
+    # Validate against declared settings
+    allowed_keys = {s.key for s in skill.get_configurable_settings()}
+    body = await request.json()
+    updated = {}
+
+    try:
+        conn = _scheduler.skill_db_mgr.get_connection(name)
+        for key, value in body.items():
+            if key not in allowed_keys:
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at) "
+                "VALUES (?, ?, datetime('now'))",
+                (key, str(value)),
+            )
+            updated[key] = str(value)
+            logger.info("API: skill_setting(%s, %s) set to %s", name, key, value)
+
+        # If backfill_depth changed, reset backfill_completed so it re-runs
+        if "backfill_depth_days" in updated:
+            conn.execute(
+                "UPDATE settings SET value = 'false', updated_at = datetime('now') "
+                "WHERE key = 'backfill_completed'"
+            )
+            logger.info("API: Reset backfill_completed for %s (depth changed)", name)
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    return {"name": name, "updated": updated}
+
+
 _running_skills: dict = {}  # name -> threading.Thread
 
 @app.post("/api/skills/{name}/run")

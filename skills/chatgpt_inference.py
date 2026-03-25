@@ -28,14 +28,16 @@ Services:
   execute_prompt(prompt, web_search=False)
   execute_prompt_with_image(prompt, image_paths, web_search=False)
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 """
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 import json
 import logging
 import os
 import time
+
+import requests as _requests
 
 from src.cdp_client import CDPClient, CDPTab
 from src.skills.base import (
@@ -52,7 +54,20 @@ REPLY_TIMEOUT = 600  # 10 minutes
 
 
 class ChatGPTInferenceSkill(BaseSkill):
-    """Service provider — runs prompts on ChatGPT, returns replies."""
+    """Service provider — runs prompts on ChatGPT, returns replies.
+
+    Singleton: use ChatGPTInferenceSkill.instance() to get the shared instance.
+    Direct API: use instance().execute_direct(payload) for in-process API calls.
+    """
+
+    _singleton = None
+
+    @classmethod
+    def instance(cls):
+        """Get or create the singleton instance."""
+        if cls._singleton is None:
+            cls._singleton = cls()
+        return cls._singleton
 
     @property
     def manifest(self) -> SkillManifest:
@@ -90,6 +105,76 @@ class ChatGPTInferenceSkill(BaseSkill):
                 max_duration_seconds=REPLY_TIMEOUT,
             ),
         ]
+
+    # ── Direct API call (no harness, no service_requests) ────
+
+    def execute_direct(self, payload: dict) -> dict:
+        """Call LLM API directly, in-process. No harness, no service_requests, no CDP.
+
+        This is the preferred way for skills to call inference when API key is available.
+        Falls back to returning error if no API key (caller should use service_requests path).
+
+        payload:
+            prompt: str (required)
+            web_search: bool (optional, default False) — routes to Perplexity
+            force_json: bool (optional, default True) — forces JSON response format
+
+        Returns dict with: reply, model, tokens_in, tokens_out, cost, duration_ms, mode
+        Or: error string
+        """
+        api_key = self._get_openrouter_key()
+        if not api_key:
+            return {"error": "No API key configured. Set openrouter_api_key in settings or OPENROUTER_API_KEY env var."}
+
+        force_json = payload.get("force_json", True)
+        result = self._execute_via_api(payload, force_json=force_json)
+
+        # Log cost
+        self._log_api_cost(result)
+
+        return result
+
+    def _log_api_cost(self, result: dict) -> None:
+        """Log API call cost to core.db api_cost_log table."""
+        if result.get("error") or not result.get("mode") == "api":
+            return
+
+        try:
+            core_path = os.path.join(
+                os.environ.get('LOCALAPPDATA', ''), 'MemoryTap', 'core.db'
+            )
+            import sqlite3 as _s
+            conn = _s.connect(core_path)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_cost_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model TEXT,
+                    tokens_in INTEGER,
+                    tokens_out INTEGER,
+                    cost REAL,
+                    duration_ms INTEGER,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute(
+                "INSERT INTO api_cost_log (model, tokens_in, tokens_out, cost, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    result.get("model", ""),
+                    result.get("tokens_in", 0),
+                    result.get("tokens_out", 0),
+                    result.get("cost", 0),
+                    result.get("duration_ms", 0),
+                )
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug("Cost logging failed (non-critical): %s", e)
+
+    def has_api_key(self) -> bool:
+        """Check if an API key is configured. Skills use this to decide direct vs service_request."""
+        return bool(self._get_openrouter_key())
 
     # ── No collect — this is a service-only skill ────────────
 
@@ -453,13 +538,218 @@ class ChatGPTInferenceSkill(BaseSkill):
 
     # ── Service handling ─────────────────────────────────────
 
+    # ── OpenRouter API Backend ──────────────────────────────────
+
+    OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    DEFAULT_API_MODEL = "google/gemini-3-pro-preview"
+
+    def _get_inference_mode(self) -> str:
+        """Get inference mode from settings. Returns 'api', 'browser', or 'auto'."""
+        try:
+            from src.db.core_db import get_core_connection
+            conn = get_core_connection()
+            # Check skill settings in core.db
+            row = conn.execute(
+                "SELECT value FROM skill_settings WHERE skill_name = 'chatgpt_inference' AND key = 'inference_mode'"
+            ).fetchone()
+            if row:
+                return row[0]
+        except Exception:
+            pass
+
+        # Check environment variable as fallback
+        mode = os.environ.get('INFERENCE_MODE', 'auto')
+        return mode
+
+    def _get_openrouter_key(self) -> str:
+        """Get OpenRouter API key from settings or environment."""
+        # Try environment first (test harness uses this)
+        key = os.environ.get('OPENROUTER_API_KEY', '')
+        if key:
+            return key
+
+        # Try core.db settings
+        try:
+            from src.db.core_db import get_core_connection
+            conn = get_core_connection()
+            row = conn.execute(
+                "SELECT value FROM skill_settings WHERE skill_name = 'chatgpt_inference' AND key = 'openrouter_api_key'"
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+        except Exception:
+            pass
+
+        return ''
+
+    def _get_api_model(self) -> str:
+        """Get the model to use for API calls."""
+        model = os.environ.get('OPENROUTER_MODEL', '')
+        if model:
+            return model
+
+        try:
+            from src.db.core_db import get_core_connection
+            conn = get_core_connection()
+            row = conn.execute(
+                "SELECT value FROM skill_settings WHERE skill_name = 'chatgpt_inference' AND key = 'openrouter_model'"
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+        except Exception:
+            pass
+
+        return self.DEFAULT_API_MODEL
+
+    def _should_use_api(self) -> bool:
+        """Determine if we should use API or browser."""
+        mode = self._get_inference_mode()
+        if mode == 'browser':
+            return False
+        if mode == 'api':
+            return bool(self._get_openrouter_key())
+
+        # auto: use API if key is set
+        return bool(self._get_openrouter_key())
+
+    PERPLEXITY_MODEL = "perplexity/sonar-pro-search"
+
+    def _execute_via_api(self, payload: dict, force_json: bool = True) -> dict:
+        """Execute prompt via OpenRouter API.
+
+        Returns dict with: reply, web_search, model, tokens_in, tokens_out, cost, duration_ms
+        """
+        api_key = self._get_openrouter_key()
+        if not api_key:
+            return {"error": "OpenRouter API key not configured"}
+
+        model = payload.get("model") or self._get_api_model()
+        prompt = payload.get("prompt", "")
+        want_web_search = payload.get("web_search", False)
+
+        # Web search requested: switch to Perplexity model
+        if want_web_search:
+            model = self.PERPLEXITY_MODEL
+            force_json = False  # Perplexity doesn't support response_format
+            logger.info("[INFERENCE] Web search requested — switching to %s", model)
+
+        if not prompt:
+            return {"error": "Empty prompt"}
+
+        logger.info("[INFERENCE] API request | model=%s | prompt=%d chars | json=%s",
+                    model, len(prompt), force_json)
+
+        start = time.time()
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://kitelight.local",
+            "X-Title": "Kite Light Interest Timeline",
+        }
+
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 16384,
+        }
+
+        if force_json:
+            body["response_format"] = {"type": "json_object"}
+
+        try:
+            resp = _requests.post(
+                self.OPENROUTER_API_URL,
+                headers=headers,
+                json=body,
+                timeout=120,
+            )
+
+            duration_ms = int((time.time() - start) * 1000)
+
+            if resp.status_code != 200:
+                error_text = resp.text[:200]
+                logger.error("[INFERENCE] API error | status=%d | %s | model=%s",
+                             resp.status_code, error_text, model)
+                return {"error": f"API error {resp.status_code}: {error_text}"}
+
+            data = resp.json()
+            choice = data.get("choices", [{}])[0]
+            reply = choice.get("message", {}).get("content", "")
+
+            # Token usage and cost
+            usage = data.get("usage", {})
+            tokens_in = usage.get("prompt_tokens", 0)
+            tokens_out = usage.get("completion_tokens", 0)
+
+            # Cost from OpenRouter (if provided)
+            cost = None
+            if "usage" in data and "total_cost" in data["usage"]:
+                cost = data["usage"]["total_cost"]
+
+            logger.info(
+                "[INFERENCE] API success | model=%s | %d chars | "
+                "tokens=%d in/%d out | cost=$%.4f | %dms",
+                model, len(reply), tokens_in, tokens_out,
+                cost or 0, duration_ms
+            )
+
+            return {
+                "reply": reply,
+                "web_search": False,  # API doesn't do web search
+                "model": model,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "cost": cost,
+                "duration_ms": duration_ms,
+                "mode": "api",
+            }
+
+        except _requests.Timeout:
+            duration_ms = int((time.time() - start) * 1000)
+            logger.error("[INFERENCE] API timeout after %dms | model=%s", duration_ms, model)
+            return {"error": f"API timeout after {duration_ms}ms"}
+
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            logger.error("[INFERENCE] API exception: %s | model=%s | %dms", e, model, duration_ms)
+            return {"error": str(e)}
+
+    # ── Request Router ────────────────────────────────────────
+
     def handle_request(self, service_name: str, payload: dict, cdp: CDPClient) -> dict:
-        """Handle a service request. Always returns dict with data or error."""
-        if service_name == "execute_prompt":
-            return self._execute(payload, cdp, with_images=False)
-        if service_name == "execute_prompt_with_image":
+        """Handle a service request. Routes to API or browser based on settings."""
+        if service_name not in ("execute_prompt", "execute_prompt_with_image"):
+            return {"error": f"Unknown service: {service_name}"}
+
+        with_images = service_name == "execute_prompt_with_image"
+
+        # Images always go to browser (API doesn't support file upload this way)
+        if with_images:
+            logger.info("[INFERENCE] Image request — using browser mode")
             return self._execute(payload, cdp, with_images=True)
-        return {"error": f"Unknown service: {service_name}"}
+
+        # Check if we should use API
+        use_api = self._should_use_api()
+        api_key = self._get_openrouter_key()
+        mode = self._get_inference_mode()
+        logger.info("[INFERENCE] Routing: mode=%s, api_key=%s, use_api=%s",
+                    mode, f"{api_key[:8]}..." if api_key else "NONE", use_api)
+
+        if use_api:
+            result = self._execute_via_api(payload)
+            if result.get("error"):
+                logger.warning("[INFERENCE] API failed: %s — retrying via API",
+                               result["error"])
+                # Retry API (not fallback to browser)
+                time.sleep(5)
+                result = self._execute_via_api(payload)
+
+            return result
+
+        # Browser mode
+        logger.info("[INFERENCE] Using browser mode (no API key or mode=browser)")
+        return self._execute(payload, cdp, with_images=False)
 
     def _execute(self, payload: dict, cdp: CDPClient, with_images: bool,
                  _retry_count: int = 0) -> dict:

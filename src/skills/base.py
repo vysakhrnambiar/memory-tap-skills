@@ -133,6 +133,7 @@ class SkillManifest:
     schedule_hours: int = 3      # how often to run
     login_url: str = ""          # URL to show user for manual login
     checksum: str = ""           # sha256 of the skill file
+    needs_browser: bool = True   # False for skills that read from DB only (no CDP tab needed)
     # Collection limits
     max_items_first_run: int = 100   # item cap on first run (0 = unlimited)
     max_items_per_run: int = 0       # 0 = unlimited for subsequent runs
@@ -147,6 +148,24 @@ class ServiceDefinition:
     input_schema: dict = field(default_factory=dict)
     output_schema: dict = field(default_factory=dict)
     max_duration_seconds: int = 60
+
+
+@dataclass
+class SkillSetting:
+    """A user-configurable setting for a skill.
+
+    Skills declare these in get_configurable_settings(). The actual values
+    live in the skill's own DB (settings table), surviving updates/hot-reloads.
+    The dashboard renders UI based on setting_type.
+    """
+    key: str                            # DB key (e.g., "backfill_depth_days")
+    label: str                          # Display label (e.g., "Backfill Depth")
+    setting_type: str = "text"          # text, number, select, toggle
+    default: str = ""                   # Default value (string — stored as text in DB)
+    options: list[dict] = field(default_factory=list)  # For select: [{value, label}]
+    description: str = ""               # Help text shown below the field
+    min_value: float | None = None      # For number type
+    max_value: float | None = None      # For number type
 
 
 @dataclass
@@ -206,6 +225,26 @@ class BaseSkill(ABC):
         """
         ...
 
+    def migrate_schema(self, conn, old_version: str, new_version: str) -> None:
+        """Handle DB schema changes between skill versions.
+
+        Called automatically when the skill version changes. Every skill MUST
+        implement this method — even if it's just `pass` for code-only bumps.
+
+        IMPORTANT — NEW SKILL CHECKLIST:
+        - Every new skill must implement migrate_schema().
+        - If the version bump only changes code (not tables), body is `pass`.
+        - If tables change, add ALTER TABLE / CREATE INDEX here with version guards:
+
+            if old_version < "0.5.0":
+                conn.execute("ALTER TABLE items ADD COLUMN category TEXT DEFAULT ''")
+                conn.commit()
+
+        Without this method, version bumps trigger a "recreating schema" warning
+        and re-run create_schema() — which works but is noisy and fragile.
+        """
+        pass
+
     @abstractmethod
     def get_search_results(self, conn, query: str, limit: int = 20) -> list[dict]:
         """Search this skill's data. Called by dashboard for cross-skill search.
@@ -244,6 +283,21 @@ class BaseSkill(ABC):
 
         Default: returns empty list. Skills with stat_cards widgets must override.
         Each item: {"label": "Videos", "value": 142}
+        """
+        return []
+
+    def get_configurable_settings(self) -> list[SkillSetting]:
+        """Declare user-editable settings for this skill.
+
+        Default: empty (no configurable settings). Override to expose settings
+        on the dashboard. Values are stored in the skill's own DB (settings table)
+        and survive skill updates/hot-reloads.
+
+        The dashboard renders UI based on setting_type:
+          - "text": text input
+          - "number": number input with optional min/max
+          - "select": dropdown with options
+          - "toggle": on/off switch (value "true"/"false")
         """
         return []
 
@@ -496,6 +550,11 @@ class BaseSkill(ABC):
         m = self.manifest
         core_path = core_db_path or CORE_DB_PATH
 
+        # Service-only skills (no collection) skip the full run cycle
+        if self.get_services() and m.schedule_hours == 0:
+            logger.info("Skill %s is service-only — skipping collection run", m.name)
+            return CollectResult()
+
         # Check internet before anything else
         if not self.check_internet():
             logger.warning("No internet — skipping skill %s", m.name)
@@ -510,6 +569,40 @@ class BaseSkill(ABC):
         # Create tracker with split connections
         tracker = SyncTracker(m.name, skill_conn, core_path)
         log_id = tracker.start_sync()
+
+        # Skills that don't need a browser (DB readers) — skip tab/login
+        if not m.needs_browser:
+            logger.info("Skill %s: no browser needed — running data curation", m.name)
+            # Show a status tab so user knows what's happening
+            status_tab = None
+            try:
+                status_tab = client.get_or_create_tab(m.name, "about:blank", db_path=core_path)
+                status_tab.js("""
+                    document.body.style.cssText = 'background:#1a1a2e;color:#e0e0e0;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0';
+                    document.body.innerHTML = '<div style="text-align:center"><h2 style="color:#7c3aed">Interest Timeline</h2><p>Curating your interests in the background...</p><p style="color:#888;font-size:14px">This tab will update when complete</p></div>';
+                """)
+            except Exception:
+                pass  # status tab is nice-to-have, not critical
+
+            try:
+                limits = RunLimits(m.max_items_first_run, m.max_items_per_run, m.max_minutes_per_run)
+                result = self.collect(status_tab, tracker, limits)
+                tracker.finish_sync(result.added, result.updated, result.skipped,
+                                    error=result.error)
+                # Update status tab on completion
+                if status_tab:
+                    try:
+                        msg = f"Done! {result.added} new, {result.updated} updated" if not result.error else f"Error: {result.error[:100]}"
+                        status_tab.js(f"""
+                            document.body.innerHTML = '<div style="text-align:center"><h2 style="color:#7c3aed">Interest Timeline</h2><p style="color:#22c55e">{msg}</p></div>';
+                        """)
+                    except Exception:
+                        pass
+                return result
+            except Exception as e:
+                logger.error("Skill %s collect failed: %s", m.name, e)
+                tracker.finish_sync(0, 0, 0, error=str(e))
+                return CollectResult(error=str(e))
 
         tab = None
         try:

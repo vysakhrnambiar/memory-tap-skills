@@ -108,6 +108,10 @@ class SkillScheduler:
         if not row or not row["enabled"]:
             return False
 
+        # Service-only skills (schedule_hours=0) run on-demand, not on a schedule
+        if row["schedule_hours"] == 0:
+            return False
+
         if not row["last_sync_at"]:
             # Never run before — only auto-run if user has logged in at least once
             if row["login_status"] != "logged_in":
@@ -327,18 +331,47 @@ class SkillScheduler:
         self._thread = None
         logger.info("Scheduler stopped")
 
+    def _write_heartbeat(self):
+        """Write heartbeat file with current timestamp + status."""
+        try:
+            hb_path = os.path.join(
+                os.environ.get("LOCALAPPDATA", ""), "MemoryTap", "heartbeat.json"
+            )
+            import json as _json
+            data = {
+                "timestamp": datetime.now().isoformat(),
+                "pid": os.getpid(),
+                "skills_loaded": len(self._skills),
+                "running_skill": self._running_skill if hasattr(self, '_running_skill') else None,
+            }
+            with open(hb_path, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass  # heartbeat is best-effort
+
     def _loop(self):
         """Main scheduler loop."""
+        heartbeat_counter = 0
         while self._running:
+            # Write heartbeat every ~5 minutes (300 / check_interval iterations)
+            heartbeat_counter += 1
+            if heartbeat_counter >= (300 // max(self._check_interval, 1)):
+                self._write_heartbeat()
+                heartbeat_counter = 0
+
             for name, skill in list(self._skills.items()):
                 if not self._running:
                     break
                 try:
                     if self._should_run(name):
                         logger.info("Running scheduled skill: %s", name)
+                        self._running_skill = name
+                        self._write_heartbeat()
                         self.run_skill(name)
+                        self._running_skill = None
                 except Exception as e:
                     logger.error("Scheduler error for %s: %s", name, e)
+                    self._running_skill = None
 
             # Wait before checking again
             for _ in range(self._check_interval):

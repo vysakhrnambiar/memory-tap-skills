@@ -303,11 +303,14 @@ def register_skill(name: str, version: str, description: str,
                    db_path: str | None = None):
     """Register or update a skill in the registry."""
     conn = get_core_connection(db_path)
+    # Skills with no auth_provider don't need login
+    auto_login = 'logged_in' if not auth_provider else None
+
     conn.execute(
         """INSERT INTO skill_registry
            (name, version, description, auth_provider, target_url, db_path,
-            login_url, tabs_needed, schedule_hours, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            login_url, tabs_needed, schedule_hours, login_status, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'not_logged_in'), datetime('now'))
            ON CONFLICT(name) DO UPDATE SET
                version = excluded.version,
                description = excluded.description,
@@ -316,10 +319,11 @@ def register_skill(name: str, version: str, description: str,
                db_path = excluded.db_path,
                login_url = excluded.login_url,
                tabs_needed = excluded.tabs_needed,
-               schedule_hours = excluded.schedule_hours,
+               login_status = CASE WHEN excluded.auth_provider = '' OR excluded.auth_provider IS NULL
+                              THEN 'logged_in' ELSE skill_registry.login_status END,
                updated_at = datetime('now')""",
         (name, version, description, auth_provider, target_url, db_path_skill,
-         login_url, tabs_needed, schedule_hours),
+         login_url, tabs_needed, schedule_hours, auto_login),
     )
     conn.commit()
     conn.close()

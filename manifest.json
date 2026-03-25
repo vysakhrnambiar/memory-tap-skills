@@ -26,8 +26,31 @@
     {
       "name": "chatgpt_inference",
       "file": "chatgpt_inference.py",
-      "version": "0.3.0",
-      "checksum": "sha256:e1f2111f74139445dcb0909c42a035f94133bc62bb299eaaf472eddfd31a5e10"
+      "version": "0.4.0",
+      "description": "LLM inference service - OpenRouter API + browser fallback. Single point of control for all LLM calls.",
+      "schedule_hours": 0,
+      "checksum": "sha256:bb1dc1b4147303c674bf274542dbe84cdbcd4c8cd5b732f1df88bcbd2d8cd62a"
+    },
+    {
+      "name": "google_activity",
+      "version": "0.4.1",
+      "file": "google_activity.py",
+      "target_site": "myactivity.google.com",
+      "auth_provider": "google",
+      "description": "Collects YouTube watch history from Google MyActivity - garbage detection, entry tagging, session detection, channel analysis",
+      "schedule_hours": 6,
+      "checksum": "sha256:5fae1f72d7fc2420baeed51ecbb14dcf2f9ffeb14de1d6f7c3d46ce81b523f9b"
+    },
+    {
+      "name": "interest_timeline",
+      "version": "0.1.0",
+      "file": "interest_timeline.py",
+      "target_site": "",
+      "auth_provider": "",
+      "description": "Extracts and tracks user interests from activity data - LLM-powered extraction, matching, daily intelligence",
+      "schedule_hours": 6,
+      "needs_browser": false,
+      "checksum": "sha256:e105e9b35decb98eb3e0caa1314cf4a3b0a52b571d69aa82f276ad0a42011957"
     }
   ]
 }
