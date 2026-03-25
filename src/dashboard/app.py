@@ -3,10 +3,11 @@ Dashboard — FastAPI web UI for Memory Tap.
 
 Features:
 - Settings page (LLM provider, API key, skill enable/disable)
-- Timeline view (history by day — what was collected)
-- Skill status (login status, last sync, errors)
+- Timeline view (history by day — what was collected from sync_log in core.db)
+- Skill status (from skill_registry in core.db)
 - Login trigger (opens Chrome for user to sign in)
-- RAG chat interface (talk to your collected data)
+- Search across per-skill DBs
+- Interest timeline visualization
 """
 import json
 import logging
@@ -25,6 +26,9 @@ logger = logging.getLogger("memory_tap.dashboard")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 CORE_DB_PATH = os.path.join(
     os.environ.get("LOCALAPPDATA", ""), "MemoryTap", "core.db"
+)
+SKILL_DATA_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA", ""), "MemoryTap", "skill_data"
 )
 
 app = FastAPI(title="Memory Tap", docs_url=None, redoc_url=None)
@@ -101,6 +105,15 @@ def _set_skill_setting(skill_name: str, key: str, value: str):
     conn.close()
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    """Check if a table exists in the given connection."""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 # Settings keys that map to skill_settings in core.db
 # Format: dashboard_key -> (skill_name, setting_key)
 _SKILL_SETTINGS_MAP = {
@@ -114,23 +127,32 @@ _SKILL_SETTINGS_MAP = {
 
 @app.get("/api/settings")
 async def get_settings():
-    # Legacy settings from memory_tap.db
-    conn = get_connection(_db_path)
-    rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    conn.close()
-    settings = {r["key"]: r["value"] for r in rows}
+    settings = {}
+
+    # Legacy settings from memory_tap.db (if available)
+    try:
+        conn = get_connection(_db_path)
+        if _table_exists(conn, "settings"):
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+            settings = {r["key"]: r["value"] for r in rows}
+        conn.close()
+    except Exception:
+        logger.debug("Could not read legacy settings from memory_tap.db")
 
     # Skill settings from core.db skill_settings table
     _ensure_skill_settings_table()
-    core_conn = _get_core_connection()
-    for dashboard_key, (skill_name, setting_key) in _SKILL_SETTINGS_MAP.items():
-        row = core_conn.execute(
-            "SELECT value FROM skill_settings WHERE skill_name = ? AND key = ?",
-            (skill_name, setting_key),
-        ).fetchone()
-        if row:
-            settings[dashboard_key] = row["value"]
-    core_conn.close()
+    try:
+        core_conn = _get_core_connection()
+        for dashboard_key, (skill_name, setting_key) in _SKILL_SETTINGS_MAP.items():
+            row = core_conn.execute(
+                "SELECT value FROM skill_settings WHERE skill_name = ? AND key = ?",
+                (skill_name, setting_key),
+            ).fetchone()
+            if row:
+                settings[dashboard_key] = row["value"]
+        core_conn.close()
+    except Exception:
+        logger.debug("Could not read skill settings from core.db")
 
     # Don't expose full API keys
     if "api_key" in settings:
@@ -147,6 +169,7 @@ async def get_settings():
 @app.post("/api/settings")
 async def update_settings(request: Request):
     data = await request.json()
+    _ensure_skill_settings_table()
     for key, value in data.items():
         if key and value is not None:
             if key in _SKILL_SETTINGS_MAP:
@@ -161,25 +184,41 @@ async def update_settings(request: Request):
 
 @app.get("/api/sources")
 async def get_sources():
-    conn = get_connection(_db_path)
-    rows = conn.execute(
-        "SELECT * FROM sources ORDER BY name"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """Get all registered skills from core.db skill_registry."""
+    try:
+        conn = _get_core_connection()
+        if not _table_exists(conn, "skill_registry"):
+            conn.close()
+            return []
+        rows = conn.execute(
+            "SELECT name, description, enabled, login_status, last_sync_at, "
+            "last_sync_items, last_error, schedule_hours FROM skill_registry ORDER BY name"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error("Failed to load sources: %s", e)
+        return []
 
 
 @app.post("/api/sources/{name}/toggle")
 async def toggle_source(name: str):
-    conn = get_connection(_db_path)
-    conn.execute(
-        "UPDATE sources SET enabled = CASE WHEN enabled = 1 THEN 0 ELSE 1 END WHERE name = ?",
-        (name,),
-    )
-    conn.commit()
-    row = conn.execute("SELECT enabled FROM sources WHERE name = ?", (name,)).fetchone()
-    conn.close()
-    return {"name": name, "enabled": row["enabled"] if row else 0}
+    """Toggle skill enabled/disabled in core.db skill_registry."""
+    try:
+        conn = _get_core_connection()
+        if _table_exists(conn, "skill_registry"):
+            conn.execute(
+                "UPDATE skill_registry SET enabled = CASE WHEN enabled = 1 THEN 0 ELSE 1 END WHERE name = ?",
+                (name,),
+            )
+            conn.commit()
+            row = conn.execute("SELECT enabled FROM skill_registry WHERE name = ?", (name,)).fetchone()
+            conn.close()
+            return {"name": name, "enabled": row["enabled"] if row else 0}
+        conn.close()
+    except Exception as e:
+        logger.error("Failed to toggle source: %s", e)
+    return {"name": name, "enabled": 0}
 
 
 @app.post("/api/sources/{name}/run")
@@ -208,98 +247,115 @@ async def open_login(name: str):
     return {"status": "opened", "url": url}
 
 
-# --- API: Timeline (history by day) ---
+# --- API: Timeline (history by day from sync_log in core.db) ---
 
 @app.get("/api/timeline")
 async def get_timeline(days: int = 7):
-    """Get collected data grouped by day for the timeline view."""
-    conn = get_connection(_db_path)
-    since = (datetime.now() - timedelta(days=days)).isoformat()
+    """Get sync history grouped by day from core.db sync_log.
 
-    timeline = {}
+    Uses sync_log from core.db which tracks all skill runs
+    (skill_name, items_found, items_new, status, errors, etc.).
+    """
+    try:
+        conn = _get_core_connection()
+        if not _table_exists(conn, "sync_log"):
+            conn.close()
+            return []
 
-    # Conversations updated recently
-    convs = conn.execute(
-        """SELECT source, title, url, message_count, updated_at, last_synced_at
-           FROM conversations
-           WHERE last_synced_at >= ?
-           ORDER BY last_synced_at DESC""",
-        (since,),
-    ).fetchall()
+        since = (datetime.now() - timedelta(days=days)).isoformat()
+        timeline = {}
 
-    for c in convs:
-        day = (c["last_synced_at"] or c["updated_at"] or "")[:10]
-        if day not in timeline:
-            timeline[day] = {"date": day, "conversations": [], "videos": [], "sync_runs": []}
-        timeline[day]["conversations"].append({
-            "source": c["source"],
-            "title": c["title"],
-            "url": c["url"],
-            "message_count": c["message_count"],
-            "synced_at": c["last_synced_at"],
-        })
+        # Get sync_log entries from core.db
+        logs = conn.execute(
+            """SELECT skill_name, started_at, finished_at, items_found, items_new,
+                      items_updated, status, error, elapsed_minutes
+               FROM sync_log
+               WHERE started_at >= ?
+               ORDER BY started_at DESC""",
+            (since,),
+        ).fetchall()
 
-    # YouTube videos
-    videos = conn.execute(
-        """SELECT video_id, title, channel, url, watched_at, synced_at
-           FROM youtube_videos
-           WHERE synced_at >= ?
-           ORDER BY synced_at DESC""",
-        (since,),
-    ).fetchall()
+        for log_entry in logs:
+            day = (log_entry["started_at"] or "")[:10]
+            if not day:
+                continue
+            if day not in timeline:
+                timeline[day] = {
+                    "date": day,
+                    "conversations": [],
+                    "videos": [],
+                    "sync_runs": [],
+                }
+            timeline[day]["sync_runs"].append({
+                "source": log_entry["skill_name"],
+                "started_at": log_entry["started_at"],
+                "finished_at": log_entry["finished_at"],
+                "items_found": log_entry["items_found"] or 0,
+                "items_new": log_entry["items_new"] or 0,
+                "items_updated": log_entry["items_updated"] or 0,
+                "status": log_entry["status"],
+                "error": log_entry["error"],
+                "elapsed_minutes": log_entry["elapsed_minutes"],
+            })
 
-    for v in videos:
-        day = (v["synced_at"] or v["watched_at"] or "")[:10]
-        if day not in timeline:
-            timeline[day] = {"date": day, "conversations": [], "videos": [], "sync_runs": []}
-        timeline[day]["videos"].append({
-            "video_id": v["video_id"],
-            "title": v["title"],
-            "channel": v["channel"],
-            "url": v["url"],
-            "watched_at": v["watched_at"],
-        })
+        conn.close()
 
-    # Sync log
-    logs = conn.execute(
-        """SELECT source, started_at, finished_at, items_found, items_new,
-                  items_updated, status, error
-           FROM sync_log
-           WHERE started_at >= ?
-           ORDER BY started_at DESC""",
-        (since,),
-    ).fetchall()
-
-    for l in logs:
-        day = (l["started_at"] or "")[:10]
-        if day not in timeline:
-            timeline[day] = {"date": day, "conversations": [], "videos": [], "sync_runs": []}
-        timeline[day]["sync_runs"].append(dict(l))
-
-    conn.close()
-
-    # Sort by date descending
-    result = sorted(timeline.values(), key=lambda x: x["date"], reverse=True)
-    return result
+        # Sort by date descending
+        result = sorted(timeline.values(), key=lambda x: x["date"], reverse=True)
+        return result
+    except Exception as e:
+        logger.error("Failed to load timeline: %s", e)
+        return []
 
 
 # --- API: Stats ---
 
 @app.get("/api/stats")
 async def get_stats():
-    """Overall collection stats."""
-    conn = get_connection(_db_path)
+    """Overall collection stats from core.db."""
     stats = {
-        "total_conversations": conn.execute("SELECT COUNT(*) as c FROM conversations").fetchone()["c"],
-        "total_messages": conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"],
-        "total_videos": conn.execute("SELECT COUNT(*) as c FROM youtube_videos").fetchone()["c"],
-        "total_artifacts": conn.execute("SELECT COUNT(*) as c FROM artifacts").fetchone()["c"],
+        "total_skills": 0,
+        "active_skills": 0,
+        "total_syncs": 0,
+        "total_items_collected": 0,
         "sources": [],
     }
-    sources = conn.execute("SELECT name, login_status, last_sync_at, last_error FROM sources").fetchall()
-    for s in sources:
-        stats["sources"].append(dict(s))
-    conn.close()
+
+    try:
+        conn = _get_core_connection()
+
+        # Skill counts from skill_registry
+        if _table_exists(conn, "skill_registry"):
+            row = conn.execute("SELECT COUNT(*) as c FROM skill_registry").fetchone()
+            stats["total_skills"] = row["c"] if row else 0
+
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM skill_registry WHERE enabled = 1"
+            ).fetchone()
+            stats["active_skills"] = row["c"] if row else 0
+
+            # Per-skill info
+            sources = conn.execute(
+                "SELECT name, login_status, last_sync_at, last_error, enabled "
+                "FROM skill_registry ORDER BY name"
+            ).fetchall()
+            for s in sources:
+                stats["sources"].append(dict(s))
+
+        # Sync stats from sync_log
+        if _table_exists(conn, "sync_log"):
+            row = conn.execute("SELECT COUNT(*) as c FROM sync_log").fetchone()
+            stats["total_syncs"] = row["c"] if row else 0
+
+            row = conn.execute(
+                "SELECT COALESCE(SUM(items_new), 0) as c FROM sync_log WHERE status IN ('completed', 'success')"
+            ).fetchone()
+            stats["total_items_collected"] = row["c"] if row else 0
+
+        conn.close()
+    except Exception as e:
+        logger.error("Failed to load stats: %s", e)
+
     return stats
 
 
@@ -307,51 +363,73 @@ async def get_stats():
 
 @app.get("/api/search")
 async def search(q: str, limit: int = 20):
-    """Full-text search across all collected data."""
-    conn = get_connection(_db_path)
+    """Full-text search across per-skill databases."""
     results = []
 
-    # Search messages
-    rows = conn.execute(
-        """SELECT m.content, m.role, m.thinking_block, c.title, c.source, c.url
-           FROM messages_fts f
-           JOIN messages m ON m.id = f.rowid
-           JOIN conversations c ON c.id = m.conversation_id
-           WHERE messages_fts MATCH ?
-           ORDER BY rank
-           LIMIT ?""",
-        (q, limit),
-    ).fetchall()
-    for r in rows:
-        results.append({
-            "type": "message",
-            "source": r["source"],
-            "conversation_title": r["title"],
-            "role": r["role"],
-            "content": r["content"][:500],
-            "url": r["url"],
-        })
+    # Search in per-skill databases that have conversations/messages
+    for skill_db_name in ["chatgpt_history.db", "gemini_history.db"]:
+        skill_db_path = os.path.join(SKILL_DATA_DIR, skill_db_name)
+        if not os.path.exists(skill_db_path):
+            continue
 
-    # Search YouTube
-    rows = conn.execute(
-        """SELECT v.title, v.channel, v.url, v.description, v.top_comment
-           FROM youtube_fts f
-           JOIN youtube_videos v ON v.id = f.rowid
-           WHERE youtube_fts MATCH ?
-           ORDER BY rank
-           LIMIT ?""",
-        (q, limit),
-    ).fetchall()
-    for r in rows:
-        results.append({
-            "type": "youtube",
-            "title": r["title"],
-            "channel": r["channel"],
-            "url": r["url"],
-            "description": (r["description"] or "")[:300],
-        })
+        try:
+            conn = sqlite3.connect(skill_db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.row_factory = sqlite3.Row
 
-    conn.close()
+            # Check if this DB has the expected tables
+            if _table_exists(conn, "messages_fts") and _table_exists(conn, "messages") and _table_exists(conn, "conversations"):
+                rows = conn.execute(
+                    """SELECT m.content, m.role, c.title, c.url
+                       FROM messages_fts f
+                       JOIN messages m ON m.id = f.rowid
+                       JOIN conversations c ON c.id = m.conversation_id
+                       WHERE messages_fts MATCH ?
+                       ORDER BY rank
+                       LIMIT ?""",
+                    (q, limit),
+                ).fetchall()
+                source = skill_db_name.replace("_history.db", "")
+                for r in rows:
+                    results.append({
+                        "type": "message",
+                        "source": source,
+                        "conversation_title": r["title"],
+                        "role": r["role"],
+                        "content": (r["content"] or "")[:500],
+                        "url": r["url"],
+                    })
+            conn.close()
+        except Exception as e:
+            logger.debug("Search error in %s: %s", skill_db_name, e)
+
+    # Also try the legacy memory_tap.db if it has the tables
+    try:
+        conn = get_connection(_db_path)
+        if _table_exists(conn, "messages_fts") and _table_exists(conn, "messages") and _table_exists(conn, "conversations"):
+            rows = conn.execute(
+                """SELECT m.content, m.role, m.thinking_block, c.title, c.source, c.url
+                   FROM messages_fts f
+                   JOIN messages m ON m.id = f.rowid
+                   JOIN conversations c ON c.id = m.conversation_id
+                   WHERE messages_fts MATCH ?
+                   ORDER BY rank
+                   LIMIT ?""",
+                (q, limit),
+            ).fetchall()
+            for r in rows:
+                results.append({
+                    "type": "message",
+                    "source": r["source"],
+                    "conversation_title": r["title"],
+                    "role": r["role"],
+                    "content": (r["content"] or "")[:500],
+                    "url": r["url"],
+                })
+        conn.close()
+    except Exception:
+        pass
+
     return results
 
 
@@ -359,30 +437,87 @@ async def search(q: str, limit: int = 20):
 
 @app.get("/api/conversations/{conv_id}")
 async def get_conversation(conv_id: int):
-    """Get full conversation with all messages."""
-    conn = get_connection(_db_path)
-    conv = conn.execute(
-        "SELECT * FROM conversations WHERE id = ?", (conv_id,)
-    ).fetchone()
-    if not conv:
+    """Get full conversation with all messages.
+
+    Tries per-skill DBs first, then falls back to legacy memory_tap.db.
+    """
+    # Try per-skill DBs
+    for skill_db_name in ["chatgpt_history.db", "gemini_history.db"]:
+        skill_db_path = os.path.join(SKILL_DATA_DIR, skill_db_name)
+        if not os.path.exists(skill_db_path):
+            continue
+
+        try:
+            conn = sqlite3.connect(skill_db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.row_factory = sqlite3.Row
+
+            if not _table_exists(conn, "conversations"):
+                conn.close()
+                continue
+
+            conv = conn.execute(
+                "SELECT * FROM conversations WHERE id = ?", (conv_id,)
+            ).fetchone()
+            if not conv:
+                conn.close()
+                continue
+
+            messages = []
+            if _table_exists(conn, "messages"):
+                messages = conn.execute(
+                    "SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_order",
+                    (conv_id,),
+                ).fetchall()
+
+            artifacts = []
+            if _table_exists(conn, "artifacts"):
+                artifacts = conn.execute(
+                    "SELECT * FROM artifacts WHERE conversation_id = ?", (conv_id,),
+                ).fetchall()
+
+            conn.close()
+            return {
+                "conversation": dict(conv),
+                "messages": [dict(m) for m in messages],
+                "artifacts": [dict(a) for a in artifacts],
+            }
+        except Exception:
+            pass
+
+    # Fall back to legacy memory_tap.db
+    try:
+        conn = get_connection(_db_path)
+        if not _table_exists(conn, "conversations"):
+            conn.close()
+            return JSONResponse({"error": "Not found"}, status_code=404)
+
+        conv = conn.execute(
+            "SELECT * FROM conversations WHERE id = ?", (conv_id,)
+        ).fetchone()
+        if not conv:
+            conn.close()
+            return JSONResponse({"error": "Not found"}, status_code=404)
+
+        messages = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_order",
+            (conv_id,),
+        ).fetchall()
+
+        artifacts = []
+        if _table_exists(conn, "artifacts"):
+            artifacts = conn.execute(
+                "SELECT * FROM artifacts WHERE conversation_id = ?", (conv_id,),
+            ).fetchall()
+
         conn.close()
+        return {
+            "conversation": dict(conv),
+            "messages": [dict(m) for m in messages],
+            "artifacts": [dict(a) for a in artifacts],
+        }
+    except Exception:
         return JSONResponse({"error": "Not found"}, status_code=404)
-
-    messages = conn.execute(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_order",
-        (conv_id,),
-    ).fetchall()
-
-    artifacts = conn.execute(
-        "SELECT * FROM artifacts WHERE conversation_id = ?", (conv_id,),
-    ).fetchall()
-
-    conn.close()
-    return {
-        "conversation": dict(conv),
-        "messages": [dict(m) for m in messages],
-        "artifacts": [dict(a) for a in artifacts],
-    }
 
 
 # --- Interest Timeline API ---

@@ -221,14 +221,15 @@
         async function loadStats() {
             try {
                 const resp = await fetch('/api/stats');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 const data = await resp.json();
                 document.getElementById('stats-bar').innerHTML = `
-                    <div class="stat-card"><div class="number">${data.total_conversations}</div><div class="label">Conversations</div></div>
-                    <div class="stat-card"><div class="number">${data.total_messages}</div><div class="label">Messages</div></div>
-                    <div class="stat-card"><div class="number">${data.total_videos}</div><div class="label">Videos</div></div>
-                    <div class="stat-card"><div class="number">${data.total_artifacts}</div><div class="label">Artifacts</div></div>
+                    <div class="stat-card"><div class="number">${data.total_skills || 0}</div><div class="label">Skills</div></div>
+                    <div class="stat-card"><div class="number">${data.active_skills || 0}</div><div class="label">Active</div></div>
+                    <div class="stat-card"><div class="number">${data.total_syncs || 0}</div><div class="label">Syncs</div></div>
+                    <div class="stat-card"><div class="number">${data.total_items_collected || 0}</div><div class="label">Items Collected</div></div>
                 `;
-                document.getElementById('status-text').textContent = `${data.sources.length} sources active`;
+                document.getElementById('status-text').textContent = `${data.active_skills || 0} skills active`;
                 document.getElementById('status-text').style.color = '#22c55e';
             } catch(e) {
                 document.getElementById('status-text').textContent = 'Error loading stats';
@@ -239,6 +240,7 @@
         async function loadTimeline() {
             try {
                 const resp = await fetch('/api/timeline?days=14');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 const days = await resp.json();
                 if (days.length === 0) {
                     document.getElementById('timeline-content').innerHTML =
@@ -248,7 +250,7 @@
                 let html = '';
                 for (const day of days) {
                     html += `<div class="timeline-day"><div class="timeline-date">${formatDate(day.date)}</div>`;
-                    for (const c of day.conversations) {
+                    for (const c of (day.conversations || [])) {
                         const badge = c.source.includes('chatgpt') ? 'chatgpt' :
                                      c.source.includes('gemini') ? 'gemini' : 'sync';
                         html += `<div class="timeline-item">
@@ -257,21 +259,25 @@
                             <div class="meta">${c.message_count} messages</div>
                         </div>`;
                     }
-                    for (const v of day.videos) {
+                    for (const v of (day.videos || [])) {
                         html += `<div class="timeline-item">
                             <span class="source-badge badge-youtube">YouTube</span>
                             <span class="title">${esc(v.title)}</span>
                             <div class="meta">${esc(v.channel || '')} ${v.watched_at ? '&middot; ' + v.watched_at : ''}</div>
                         </div>`;
                     }
-                    if (day.sync_runs.length > 0 && day.conversations.length === 0 && day.videos.length === 0) {
-                        for (const s of day.sync_runs) {
-                            html += `<div class="timeline-item">
-                                <span class="source-badge badge-sync">sync</span>
-                                <span class="title">${s.source}: ${s.status}</span>
-                                <div class="meta">${s.items_found} found, ${s.items_new} new${s.error ? ' &middot; Error: ' + esc(s.error) : ''}</div>
-                            </div>`;
-                        }
+                    for (const s of (day.sync_runs || [])) {
+                        const badge = (s.source || '').includes('chatgpt') ? 'chatgpt' :
+                                     (s.source || '').includes('gemini') ? 'gemini' :
+                                     (s.source || '').includes('youtube') ? 'youtube' : 'sync';
+                        const statusIcon = s.status === 'completed' || s.status === 'success' ? '&#10003;' :
+                                          s.status === 'error' || s.status === 'failed' ? '&#10007;' : '&#8943;';
+                        const elapsed = s.elapsed_minutes ? ` &middot; ${Math.round(s.elapsed_minutes * 10) / 10}m` : '';
+                        html += `<div class="timeline-item">
+                            <span class="source-badge badge-${badge}">${esc(s.source)}</span>
+                            <span class="title">${statusIcon} ${esc(s.status)}</span>
+                            <div class="meta">${s.items_found || 0} found, ${s.items_new || 0} new${elapsed}${s.error ? ' &middot; <span style="color:#ef4444">Error: ' + esc(s.error) + '</span>' : ''}</div>
+                        </div>`;
                     }
                     html += '</div>';
                 }
@@ -285,6 +291,7 @@
         async function loadSources() {
             try {
                 const resp = await fetch('/api/sources');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 const sources = await resp.json();
                 if (sources.length === 0) {
                     document.getElementById('sources-list').innerHTML =
@@ -296,9 +303,11 @@
                     const statusColor = s.login_status === 'logged_in' ? 'green' :
                                        s.login_status === 'not_logged_in' ? 'red' : 'yellow';
                     const lastSync = s.last_sync_at ? timeAgo(s.last_sync_at) : 'Never';
+                    const desc = s.description ? `<div style="font-size:12px;color:#666;margin-top:2px">${esc(s.description)}</div>` : '';
                     html += `<div class="source-card">
                         <div class="source-info">
                             <h3>${esc(s.name)}</h3>
+                            ${desc}
                             <div class="status">
                                 <span class="status-dot ${statusColor}"></span>
                                 ${s.login_status} &middot; Last sync: ${lastSync}
