@@ -352,11 +352,9 @@ class GoogleActivitySkill(BaseSkill):
                 ).fetchone()
                 retry = (existing[0] if existing else 0) + 1
 
+                status = "failed"
                 if retry >= MAX_RETRY_PER_DAY:
-                    status = "abandoned"
-                    logger.warning(f"Day {target_date} abandoned after {retry} failures")
-                else:
-                    status = "failed"
+                    logger.warning(f"Day {target_date} failed {retry} times — will retry next run")
 
                 conn.execute(
                     "INSERT OR REPLACE INTO collection_days "
@@ -419,7 +417,7 @@ class GoogleActivitySkill(BaseSkill):
         # Get completed and abandoned days
         skip = set()
         for row in conn.execute(
-            "SELECT date FROM collection_days WHERE status IN ('complete', 'abandoned')"
+            "SELECT date FROM collection_days WHERE status = 'complete'"
         ).fetchall():
             skip.add(row[0])
 
